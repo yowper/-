@@ -93,6 +93,14 @@ public class AutoService extends AccessibilityService {
     private static final long REPEAT_GUARD_MS = 1500;
     /** 成对命令（声音大/小、上一集/下一集、上页/下页）3 秒内不许反着再来 */
     private static final long OPPOSITE_GUARD_MS = 3000;
+    /**
+     * 用户要求：不管什么命令，上滑/下滑都只能滑一次，不能连着好几次。
+     * 本地识别把同一句话反复报出来时，间隔往往超过 1.5 秒（REPEAT_GUARD 盖不住），
+     * 所以滑动类命令单独用 3 秒的大窗口。
+     */
+    private static final long SWIPE_GUARD_MS = 3000;
+    /** 手势层面的硬锁：上滑/下滑两次之间至少隔 0.9 秒（不管是哪条路径叫的） */
+    private static final long SWIPE_MIN_GAP_MS = 900;
 
     /** 暂停 / 恢复播放的点击点：X 50%、Y 20%（用户规定） */
     private static final int PAUSE_X = 50;
@@ -114,6 +122,8 @@ public class AutoService extends AccessibilityService {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int phase = PHASE_IDLE;
     private boolean busy = false;
+    /** 上一次上滑/下滑的时间：用户要求一次只能滑一次，不能连滑 */
+    private long lastSwipeAt = 0;
     private boolean skipWatching = false;
     private boolean micClicked = false;      // 本轮唤醒周期里是否已点过豆包麦克风
     private boolean micTestMode = false;     // 「测试Mic」标定中：不自动点Mic、不扫豆包面板
@@ -160,7 +170,6 @@ public class AutoService extends AccessibilityService {
     private long pwEndAt;              // 按读到的秒数算出的结束时刻
     private int pwSeenSec = -1;        // 上一次读到的秒数
     private String pwTag = "";
-    private int[] pwLeft;
 
     private final Runnable tickTask = new Runnable() {
         @Override
@@ -1202,6 +1211,12 @@ public class AutoService extends AccessibilityService {
         }
     }
 
+    /** 上滑/下滑类命令（用户要求：这几条只能滑一次） */
+    private static boolean isSwipeCmd(int cmd) {
+        return cmd == Commands.CMD_NEXT || cmd == Commands.CMD_PREV
+                || cmd == Commands.CMD_SKIP_AD || cmd == Commands.CMD_EXIT_LIVE;
+    }
+
     private boolean dispatchTap(GestureDescription.StrokeDescription stroke) {
         try {
             GestureDescription.Builder b = new GestureDescription.Builder();
@@ -1247,6 +1262,14 @@ public class AutoService extends AccessibilityService {
         if (busy) {
             return;
         }
+        // 用户要求：上滑/下滑只能一次，不能连滑
+        long nowSw = System.currentTimeMillis();
+        if (nowSw - lastSwipeAt < SWIPE_MIN_GAP_MS) {
+            KeepService.note("上滑忽略了：" + (nowSw - lastSwipeAt) + "ms 前刚滑过一次"
+                    + "（用户要求一次命令只能滑一次）");
+            return;
+        }
+        lastSwipeAt = nowSw;
         int[] s = screen();
         if (s == null) {
             return;
@@ -1276,6 +1299,14 @@ public class AutoService extends AccessibilityService {
         if (busy) {
             return;
         }
+        // 用户要求：上滑/下滑只能一次，不能连滑
+        long nowSw = System.currentTimeMillis();
+        if (nowSw - lastSwipeAt < SWIPE_MIN_GAP_MS) {
+            KeepService.note("下滑忽略了：" + (nowSw - lastSwipeAt) + "ms 前刚滑过一次"
+                    + "（用户要求一次命令只能滑一次）");
+            return;
+        }
+        lastSwipeAt = nowSw;
         int[] s = screen();
         if (s == null) {
             return;
@@ -1396,13 +1427,12 @@ public class AutoService extends AccessibilityService {
         // 以前先看“下方文字稳不稳定”，结果把固定不动的标题当成“读秒结束”，
         // 广告锁定期间就提前上滑 → 白滑一次（用户 19:53 的日志就是这个）。
         if (Build.VERSION.SDK_INT >= 30) {
-            startPixelWatch(tag, new int[]{0});
+            startPixelWatch(tag);
             return;
         }
         final String[] lastJoin = {null};
         final int[] stable = {0};
         final int[] waited = {0};
-        final int[] left = {0};   // 只上滑一次（不再连滑；用户反馈“有时连着上拉”）
         final int[] blind = {0};
         final int gapMs = Math.max(800,
                 getSharedPreferences("cfg", MODE_PRIVATE).getInt("gap", 2000));
@@ -1420,7 +1450,7 @@ public class AutoService extends AccessibilityService {
                     // 无障碍一个字都读不到 → 改用无障碍截屏，看下方像素有没有在变
                     if (Build.VERSION.SDK_INT >= 30) {
                         postStatus(tag + "：无障碍读不到文字，改用截屏探测下方");
-                        startPixelWatch(tag, left);
+                        startPixelWatch(tag);
                         return;
                     }
                     // 老系统（<Android 11）没法截屏：按参数里的「gap」等一等
@@ -1450,20 +1480,19 @@ public class AutoService extends AccessibilityService {
                     }
                     postStatus(tag + "：读秒结束，上滑");
                 }
-                snap[0] = screenTextSnapshot();
-                swipeAndVerify(tag, left, snap);
+                swipeAndVerify(tag);
             }
         };
         handler.postDelayed(watch[0], 500);
     }
 
     /**
-     * 上滑一次，验证；没生效就补滑（最多 4 次）。
-     * 注意：广告读秒期间广告是锁着的，那时上滑是白滑，
-     * 所以滑完 1 秒要截图核对一次（看是否还在广告里 / 页面是否没变）。
+     * 用户要求（定稿）：广告 / 退出直播【只能上拉一次】。
+     * 上拉之前 confirmNoSecondsThenSwipe 已经【再截一张图比较过】、
+     * 确认下方没有读秒了，所以这里就只是滑这一次，滑完立即收尾：
+     * 不再截图核对、不再补滑（拉多次是不对的）。
      */
-    private void swipeAndVerify(final String tag, final int[] left,
-                                final java.util.ArrayList<String>[] snap) {
+    private void swipeAndVerify(final String tag) {
         if (swipeChainActive) {
             // 已经有上滑流程在跑：不允许两条路径各滑一次（那就是“连着上拉”）
             postStatus(tag + "：已经在滑了，忽略重复触发");
@@ -1471,16 +1500,7 @@ public class AutoService extends AccessibilityService {
         }
         swipeChainActive = true;
         swipesDone = 0;
-        swipeStep(tag, left, snap);
-    }
-
-    private int swipesDone = 0;
-    private boolean swipeChainActive = false;
-
-    private void swipeStep(final String tag, final int[] left,
-                           final java.util.ArrayList<String>[] snap) {
-        swipesDone++;
-        postStatus(tag + "：上滑第 " + swipesDone + " 次");
+        postStatus(tag + "：确认没有读秒 → 上滑（只滑这一次）");
         runAfterResume(new Runnable() {
             @Override
             public void run() {
@@ -1488,109 +1508,30 @@ public class AutoService extends AccessibilityService {
                     @Override
                     public void run() {
                         swipeUpOnly();
+                        swipesDone = 1;
+                        handler.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                finishSwipeOnce(tag);
+                            }
+                        }, 600);
                     }
                 });
             }
         });
-        handler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (!skipWatching) {
-                    swipeChainActive = false;
-                    return;
-                }
-                final boolean textFailed = swipeLooksFailed(snap[0]);
-                // 用户要求：上滑后 1 秒再截一张图核对 ——
-                //  ① 下方还能读到读秒 = 还在广告里 → 再上拉
-                //  ② 整屏几乎没变化 = 页面没动 → 再上拉
-                // （视频 App 的无障碍文字读不到，光靠 swipeLooksFailed 永远算“成功”）
-                captureScreenThumb(new BitmapCallback() {
-                    @Override
-                    public void onBitmap(Bitmap bmp, String error) {
-                        if (!skipWatching) {
-                            if (bmp != null) {
-                                bmp.recycle();
-                            }
-                            swipeChainActive = false;
-                            return;
-                        }
-                        boolean pageSame = false;
-                        Bitmap stripTmp = null;
-                        if (bmp != null) {
-                            int[] sig = stripSignature(bmp);
-                            if (lastStripSig != null) {
-                                pageSame = sigMeanDiff(lastStripSig, sig) == 0;
-                            }
-                            lastStripSig = sig;
-                            stripTmp = cropBottom(bmp, REGION_TOP_FRAC);
-                            bmp.recycle();
-                        }
-                        final Bitmap strip = stripTmp;
-                        final boolean pageSameF = pageSame;
-                        if (strip == null) {
-                            // 截不到图（老系统/拿不到截屏权限）→ 只能按无障碍文字判
-                            swipeVerdict(tag, left, snap, textFailed, pageSameF, -1);
-                            return;
-                        }
-                        Ocr.run(strip, new Ocr.Cb() {
-                            @Override
-                            public void onText(String text) {
-                                if (!skipWatching) {
-                                    strip.recycle();
-                                    swipeChainActive = false;
-                                    return;
-                                }
-                                int sec = readSeconds(Commands.normalize(text));
-                                strip.recycle();
-                                swipeVerdict(tag, left, snap, textFailed, pageSameF, sec);
-                            }
-                        });
-                    }
-                });
-            }
-        }, 1000);
     }
 
-    /**
-     * 一次上滑的账算完：
-     * 没生效（还在广告里 / 页面没变）→ 0.8 秒后再上滑，最多 SKIP_MAX_SWIPES 次；
-     * 否则收尾。
-     */
-    private void swipeVerdict(final String tag, final int[] left,
-                              final java.util.ArrayList<String>[] snap,
-                              final boolean textFailed, final boolean pageSame,
-                              final int adSec) {
-        if (!skipWatching) {
-            swipeChainActive = false;
-            return;
-        }
-        boolean failed = textFailed || pageSame || adSec >= 0;
-        String why = adSec >= 0
-                ? ("1 秒后下方还能读到读秒 " + adSec + " 秒（还在广告里）")
-                : (pageSame ? "1 秒内页面没变化" : "无障碍文字也没变");
-        if (failed && swipesDone < SKIP_MAX_SWIPES) {
-            postStatus(tag + "：第 " + swipesDone + " 次看起来没生效（" + why + "）→ 0.8 秒后再滑");
-            snap[0] = screenTextSnapshot();
-            handler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (skipWatching) {
-                        swipeStep(tag, left, snap);
-                    }
-                }
-            }, 800);
-            return;
-        }
+    private int swipesDone = 0;
+    private boolean swipeChainActive = false;
+
+    /** 上滑一次就收尾（用户要求：不许再补滑） */
+    private void finishSwipeOnce(String tag) {
         skipWatching = false;
         swipeChainActive = false;
         handler.removeCallbacks(pwDeadlineTask);
         handler.removeCallbacks(pixelLoop);
-        postStatus(tag + "：完成（共上滑 " + swipesDone + " 次"
-                + (failed ? "；" + why + "（广告可能还没结束？）" : "") + "）");
+        postStatus(tag + "：完成（上滑 1 次）");
     }
-
-    /** 最多补滑几次（防“白滑”，也不再无限连拉） */
-    private static final int SKIP_MAX_SWIPES = 4;
 
     /**
      * 无障碍读不到文字时的退路：无障碍截屏取整屏缩略图，
@@ -1599,7 +1540,7 @@ public class AutoService extends AccessibilityService {
      * 注意：takeScreenshot 有频率限制，两次至少隔 1 秒，所以这里每 1.3 秒采一次。
      * 调用前 skipWatching 必须已经是 true。
      */
-    private void startPixelWatch(final String tag, final int[] left) {
+    private void startPixelWatch(final String tag) {
         lastStripSig = null;
         pwSame = 0;
         pwSawChange = false;
@@ -1609,7 +1550,6 @@ public class AutoService extends AccessibilityService {
         pwOcrMiss = 0;
         pwSeenSec = -1;
         pwTag = tag;
-        pwLeft = left;
         pwWaitSec = -1;
         pwSeenSecShown = -1;
         handler.removeCallbacks(pwDeadlineTask);
@@ -1749,9 +1689,7 @@ public class AutoService extends AccessibilityService {
         postStatus(pwTag + "：" + why + "，上滑");
         handler.removeCallbacks(pixelLoop);
         handler.removeCallbacks(pwDeadlineTask);
-        final java.util.ArrayList<String>[] snap = new java.util.ArrayList[1];
-        snap[0] = screenTextSnapshot();
-        swipeAndVerify(pwTag, pwLeft, snap);
+        swipeAndVerify(pwTag);
     }
 
     /** 读秒到时（不用等下一轮采样，时刻更准）：
@@ -2972,6 +2910,15 @@ public class AutoService extends AccessibilityService {
         if (isOppositePair(lastExecCmd, cmd) && nowMs - lastExecAt < OPPOSITE_GUARD_MS) {
             KeepService.note("刚执行过「" + lastExecText + "」，又听到反过来的「" + text
                     + "」，按防误听忽略（" + (OPPOSITE_GUARD_MS / 1000) + " 秒内不反向）");
+            return false;
+        }
+        // 用户要求：上滑/下滑类命令只能滑一次，不能连着好几次。
+        // （本地识别会把同一句话反复报出来，间隔经常超过上面那个 1.5 秒）
+        if (isSwipeCmd(cmd) && isSwipeCmd(lastExecCmd)
+                && nowMs - lastExecAt < SWIPE_GUARD_MS) {
+            KeepService.note("刚滑过一次（「" + lastExecText + "」，" + (nowMs - lastExecAt)
+                    + "ms 前），「" + text + "」不再滑第二次（"
+                    + (SWIPE_GUARD_MS / 1000) + " 秒内只滑一次）");
             return false;
         }
         // 用户要求：一个字就说完的命令（停 / 大 / 小 / 亮 / 暗）
