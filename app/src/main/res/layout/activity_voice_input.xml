@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="6dp">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="34dp"
+        android:background="#DD000000"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/voiceEdit"
+            android:layout_width="120dp"
+            android:layout_height="match_parent"
+            android:background="#00000000"
+            android:gravity="center_vertical"
+            android:hint=""
+            android:inputType="text"
+            android:paddingLeft="8dp"
+            android:paddingRight="8dp"
+            android:singleLine="true"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/btnClose"
+            android:layout_width="34dp"
+            android:layout_height="match_parent"
+            android:background="#666666"
+            android:gravity="center"
+            android:text="✕"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/btnPickMic"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:background="#CC222222"
+        android:gravity="center"
+        android:padding="4dp"
+        android:text="🎯 重设麦克风位置"
+        android:textColor="#FFD54F"
+        android:textSize="10sp" />
+
+</LinearLayout>

@@ -1,0 +1,35 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+build/
+app/build/
+/captures
+.externalNativeBuild
+.cxx
+
+# ── 本机工具链：几百 MB，绝对不能上传（上传了仓库会几十 GB，推不上去）──
+/jdk-17/
+/android-sdk/
+/gradle-8.7/
+
+# ── 下载下来的安装包压缩包（云端构建时由 workflow 自己装 JDK/SDK/Gradle）──
+cmdline-tools.zip
+vosk-model-small-cn.zip
+
+# ── 编译产物：APK 走 GitHub Releases 发布，不要塞进代码历史 ──
+*.apk
+*.aab
+*.ap_
+*.dex
+output.json
+
+# ── 本地日志/临时文件 ──
+build_log*.txt
+err.txt
+*.log
+*.tmp
+
+# ── 注意：app/src/main/assets/model-cn/ 是 Vosk 中文模型（约 65MB），
+#    编译时必须要有，【不要】加到 .gitignore 里。

@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="8dp"
+            android:text="状态：未开启"
+            android:textSize="15sp" />
+
+        <Button
+            android:id="@+id/btnLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="📋 查看最近日志（排错用）" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="6dp"
+            android:text="第一步：先给保命权限"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnBattery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="① 允许后台运行（忽略电池优化）" />
+
+        <Button
+            android:id="@+id/btnOverlayPerm"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="② 授予悬浮窗权限（显示在其他应用上层）" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:paddingBottom="6dp"
+            android:text="第二步：再开服务"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnOpen"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="③ 打开无障碍设置并开启本服务" />
+
+        <Button
+            android:id="@+id/btnKeep"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="④ 开启后台常驻服务" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:paddingBottom="6dp"
+            android:text="第三步：调参数、测试"
+            android:textStyle="bold" />
+
+        <CheckBox
+            android:id="@+id/cbDoubao"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="使用豆包语音输入法" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="32dp"
+            android:text="勾选：说「嗨小白」→ 什么都不做（不静音也不点屏幕），只弹键盘并点一次豆包 Mic，命令全交给豆包。\n不勾选：不要唤醒词，直接说命令；说「嗨小白」= 什么都不做。\n\n两种模式都一样：没说唤醒词时，本地先自己认一遍，能对上任何命令就直接执行。"
+            android:textColor="#666666"
+            android:textSize="12sp" />
+
+        <CheckBox
+            android:id="@+id/cbShake"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="摇一摇（点击暂停 + 上滑）" />
+
+        <Button
+            android:id="@+id/btnWrite"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="☀ 允许修改系统设置（说「亮 / 暗」调亮度需要）" />
+
+        <Button
+            android:id="@+id/btnSettings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="⚙ 参数设置" />
+
+        <Button
+            android:id="@+id/btnTestMic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="▶ 测试Mic（标定麦克风位置）" />
+
+        <Button
+            android:id="@+id/btnExit"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="⑤ 退出" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:lineSpacingExtra="3dp"
+            android:text="顺序很重要：先做 ①②（保命），再做 ③④（开服务）。反过来的话，刚开无障碍就会被系统杀掉。\n\n勾选豆包时：\n· 说「嗨小白」→ 默认什么都不做（不静音、不点屏幕），只弹键盘 + 点豆包 Mic\n· 输入框出现并立即弹键盘、点一次豆包麦克风（本地语音包不再听命令）\n· 输入框里一出现短句就执行\n· 点输入框的 ✕ = 整个程序退出\n\n不勾选豆包时：不要唤醒词，直接说「下一集」等命令就执行。\n\n两种模式都不用先说唤醒词：没听到「嗨小白」时，本地引擎自己先认一遍，\n能对上任何命令就直接执行（只收 8 个字以内的短句，长句当视频里的话不理）。\n\n命令（越短越好，本地也认得准）：\n下一集/上翻=上滑，上一集/下翻=下滑，\n广告=退出广告（看下方读秒，读秒到了自动上拉，不左划），\n直播=退出直播（比退出广告多一个左划），\n上页=点(15%,85%)，下页=点(85%,85%)，\n停 / 放 / 继续 / 播放 / 继续播放=同一条命令：在(50%,20%)点一下，\n大 / 小=声音大一点 / 小一点，亮 / 暗=屏幕亮一点 / 暗一点（需 ☀ 授权），\n声音大/小一点=调媒体音量，打开某某 或直接喊名字（抖音、红果）=启动 App，\n打开豆包/关闭豆包=勾选或取消「使用豆包语音输入法」（设置里的勾会同步变化），\n光喊一声「豆包」=切换（勾着就关、没勾就开），\n测试读秒=弹出最下方读秒探测面板（没有按钮了，只能语音说），小白再见=彻底退出。\n\n所有命令都不再补“点一下恢复播放”那个动作（因为唤醒时本来就什么都没暂停）。\n\n▶ 测试Mic：弹出编辑框和豆包键盘后，你点一下键盘上的麦克风按钮，\n程序就把你点的位置记成 Mic 坐标（会补一下那次点击，让豆包真的开始听）。以后再也不用猜坐标。\n\n摇一摇 = 点击暂停 → 上滑。不用了点 ⑤ 或说「小白再见」。"
+            android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>
