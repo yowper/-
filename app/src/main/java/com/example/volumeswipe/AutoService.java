@@ -218,6 +218,13 @@ public class AutoService extends AccessibilityService {
         super.onServiceConnected();
         sInstance = this;
         phase = PHASE_IDLE;
+        // 用户要求：软件开的时候，豆包模式、短剧模式都是【关】的
+        try {
+            getSharedPreferences("cfg", MODE_PRIVATE).edit()
+                    .putBoolean("useDoubao", false)
+                    .putBoolean("shortDrama", false).apply();
+        } catch (Throwable ignored) {
+        }
         // 录制模式：用户自己录的命令名要先进词表（说得出、听得懂）
         try {
             RecordedCmds.reload(this);
@@ -238,18 +245,28 @@ public class AutoService extends AccessibilityService {
     }
 
     // ==================== 手机音量下键双击 ====================
-    // 用户要求：连着两下【音量下键】（间隔放宽到 0.9 秒，确认是想触发动作）= 下滑（上一集），
+    // 用户要求：连着两下【音量下键】= 上拉（上滑 = 下一集），
     // 同时自动恢复音量（等于自动按了两下音量上键，把两下降的补回去）。
     // 蓝牙耳机的音量键手机收不到（在耳机本地调音量），所以耳机上双击只会变音量、不会触发。
-    // 做法：第一下放行（音量正常降）、记住当时的音量；第二下吞掉 + 触发下滑 + 恢复音量。
+    // 做法：第一下放行（音量正常降）、记住当时的音量；第二下吞掉 + 触发上拉 + 恢复音量。
+    // 两下的最大间隔可以在 ⚙ 参数设置里改（毫秒），改了自动记住；默认 1500。
 
     private long lastVolKeyAt = 0;
     private boolean volConsumeUp = false;
     /** 双击前（第一下按下时）的媒体音量，触发后恢复用它 */
     private int volBeforeDoubleDown = -1;
 
-    /** 两下之间的最大间隔（用户要求放宽） */
-    private static final long VOL_DOUBLE_MS = 900;
+    /** 两下之间的最大间隔（用户可改、自动记住；默认 1500，限 500~5000） */
+    private long volDoubleMs() {
+        int v = getSharedPreferences("cfg", MODE_PRIVATE).getInt("volDoubleMs", 1500);
+        if (v < 500) {
+            v = 500;
+        }
+        if (v > 5000) {
+            v = 5000;
+        }
+        return v;
+    }
 
     @Override
     protected boolean onKeyEvent(KeyEvent event) {
@@ -266,7 +283,7 @@ public class AutoService extends AccessibilityService {
                 return false;
             }
             long now = System.currentTimeMillis();
-            if (now - lastVolKeyAt <= VOL_DOUBLE_MS && lastVolKeyAt > 0) {
+            if (now - lastVolKeyAt <= volDoubleMs() && lastVolKeyAt > 0) {
                 // 第二下：触发下滑 + 自动恢复音量，并吞掉这次按键
                 lastVolKeyAt = 0;
                 volConsumeUp = true;
@@ -293,14 +310,14 @@ public class AutoService extends AccessibilityService {
         }
     }
 
-    /** 手机音量下键连按两下 = 下滑（上一集）+ 自动恢复音量（等于自动按两下音量上键） */
+    /** 手机音量下键连按两下 = 上拉（下一集）+ 自动恢复音量（等于自动按两下音量上键） */
     private void onDoubleVolumeDown() {
         try {
             if (!isIdle()) {
                 KeepService.note("音量下键两下忽略了：正在识别一轮命令");
                 return;
             }
-            KeepService.note("手机音量下键按了两下 → 下滑（上一集），音量自动恢复");
+            KeepService.note("手机音量下键按了两下 → 上拉（下一集），音量自动恢复");
             // 自动恢复音量（用户要求：等于自动按两下音量上键，把降掉的补回去）
             if (volBeforeDoubleDown > 0) {
                 try {
@@ -321,9 +338,9 @@ public class AutoService extends AccessibilityService {
                 }
                 volBeforeDoubleDown = -1;
             }
-            // 下滑（上一集）：只滑一次的锁、防重都照常生效
-            if (executeCommand(Commands.CMD_PREV, "音量下键两下")) {
-                toastResult(Commands.CMD_PREV, "音量下键两下：下滑（上一集）");
+            // 上拉（下一集）：只滑一次的锁、防重都照常生效
+            if (executeCommand(Commands.CMD_NEXT, "音量下键两下")) {
+                toastResult(Commands.CMD_NEXT, "音量下键两下：上拉（下一集）");
             }
         } catch (Throwable t) {
             KeepService.note("音量键双击处理出错：" + t.getClass().getSimpleName());
@@ -351,7 +368,8 @@ public class AutoService extends AccessibilityService {
     }
 
     private boolean useDoubao() {
-        return getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("useDoubao", true);
+        // 用户要求：豆包模式默认【关】（免豆包直接听命令）
+        return getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("useDoubao", false);
     }
 
     // ==================== 本地引擎回调 ====================
@@ -518,7 +536,7 @@ public class AutoService extends AccessibilityService {
 
     /** 短剧模式允许的命令（用户要求：音量/亮暗/录制都要【全局】能用，所以也在这里）：
      *  下一集 / 上一集 / 广告 / 直播
-     *  + 大/小（音量）、亮/暗（亮度）、禁音/声音
+     *  + 大/小（音量）、亮/暗（亮度）、禁音/声音、停/播放
      *  + 录制（开始录制动作）
      *  + 「短剧」（再说一次就退出短剧模式）+「小白再见」（安全阀）。
      *  自己录的命令不在这里面 —— resolveCmd 里它优先放行 */
@@ -530,6 +548,7 @@ public class AutoService extends AccessibilityService {
                 || cmd == Commands.CMD_BRIGHT_UP || cmd == Commands.CMD_BRIGHT_DOWN
                 || cmd == Commands.CMD_SOUND_OFF || cmd == Commands.CMD_SOUND_ON
                 || cmd == Commands.CMD_RECORD_TOGGLE
+                || cmd == Commands.CMD_TOGGLE_PLAY || cmd == Commands.CMD_RESUME
                 || cmd == Commands.CMD_EXIT;
     }
 
@@ -1555,6 +1574,35 @@ public class AutoService extends AccessibilityService {
         startAdOrLiveWatch("退出直播");
     }
 
+    /** 用户要求：广告/直播流程【先静音，上拉前恢复音量】。
+     *  只记流程自己禁的音：之前已经手动禁音的话不重复禁（防止把「禁音前音量」记成 0）。 */
+    private void muteForSkipFlow(String tag) {
+        if (skipFlowMuted) {
+            return;
+        }
+        try {
+            SharedPreferences sp = getSharedPreferences("cfg", MODE_PRIVATE);
+            if (sp.getBoolean("soundMuted", false)) {
+                KeepService.note(tag + "：本来就是禁音状态，流程不再重复禁音");
+                return;
+            }
+            KeepService.note(tag + "：先禁音（上拉前自动恢复音量）");
+            setMediaMute(true);
+            skipFlowMuted = true;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 上拉前恢复音量（只恢复流程自己禁的音，手动禁的不动） */
+    private void unmuteForSkipFlow(String tag) {
+        if (!skipFlowMuted) {
+            return;
+        }
+        skipFlowMuted = false;
+        KeepService.note(tag + "：上拉前恢复音量");
+        setMediaMute(false);
+    }
+
     /**
      * 退出直播专用：先边缘左划，再进入读秒监视。
      * （「退出广告」不左划，直接走 startSkipSequence。）
@@ -1565,8 +1613,9 @@ public class AutoService extends AccessibilityService {
         }
         // 用户要求：直播左划之后的动作【和广告完全一样】——
         // 所以左划完成后就直接走 startSkipSequence，和「退出广告」是同一条代码路径：
-        // 先截图 → 点 (50%,20%) 暂停 → 读下方读秒 → 上拉前再截图确认无秒 → 只上拉一次。
-        postStatus(tag + "：先左划，再看读秒");
+        // 先静音 → 截图 → 读下方读秒 → 上拉前恢复音量 → 只上拉一次（不点 (50%,20%) 暂停）。
+        muteForSkipFlow(tag);
+        postStatus(tag + "：先静音 → 左划，再看读秒");
         runAfterResume(new Runnable() {
             @Override
             public void run() {
@@ -1575,7 +1624,7 @@ public class AutoService extends AccessibilityService {
                     @Override
                     public void run() {
                         postStatus(tag + "：左划完成 → 接下来和「退出广告」完全一样"
-                                + "（截图 → 点 (50%,20%) 暂停 → 读秒 → 上拉前再截图确认无秒 → 只上拉一次）");
+                                + "（已静音 → 截图 → 读秒 → 上拉前恢复音量 → 只上拉一次）");
                         startSkipSequence(tag);
                     }
                 }, 1200);
@@ -1596,12 +1645,10 @@ public class AutoService extends AccessibilityService {
         skipWatching = true;
         swipeChainActive = false;
         swipesDone = 0;
-        skipTapDone = false;
-        // 用户要求的顺序：先截图 → 再点 (50%,20%) 暂停播放 → 识别读秒。
-        // （截完图才点：截图不能被暂停图标/暂停瞬间的画面影响。）
-        // 点暂停在 pixelLoop 里第一张截图拍完之后做（见 skipTapDone）。
-        postStatus(tag + "：先截图，再点 (50%,20%) 暂停播放，然后读读秒");
-        postStatus(tag + "：截屏读读秒（屏幕下方 20%）");
+        // 用户要求：广告/直播动作里【不要点 (50%,20%) 暂停】——
+        // 改成开始时先静音、上拉前恢复音量；画面照常播，不影响截图读秒。
+        muteForSkipFlow(tag);
+        postStatus(tag + "：已静音，不点暂停，直接截屏读读秒（屏幕下方 20%）");
         // Android 11+ 一律先走截屏 + OCR：只有它能真的读到
         // 「10 秒后可继续看下一集」里的秒数。
         // 以前先看“下方文字稳不稳定”，结果把固定不动的标题当成“读秒结束”，
@@ -1680,6 +1727,8 @@ public class AutoService extends AccessibilityService {
         }
         swipeChainActive = true;
         swipesDone = 0;
+        // 用户要求：上拉前恢复音量（流程开始时禁的）
+        unmuteForSkipFlow(tag);
         postStatus(tag + "：确认没有读秒 → 上滑（只滑这一次）");
         runAfterResume(new Runnable() {
             @Override
@@ -1706,6 +1755,7 @@ public class AutoService extends AccessibilityService {
 
     /** 上滑一次就收尾（用户要求：不许再补滑） */
     private void finishSwipeOnce(String tag) {
+        unmuteForSkipFlow(tag); // 保险：万一哪条路没走上拉，也把音量还回来
         skipWatching = false;
         swipeChainActive = false;
         handler.removeCallbacks(pwDeadlineTask);
@@ -1758,16 +1808,7 @@ public class AutoService extends AccessibilityService {
                         bmp.recycle();
                     }
 
-                    // 用户要求的顺序：第一张截图拍完 → 再点 (50%,20%) 暂停播放
-                    if (!skipTapDone) {
-                        skipTapDone = true;
-                        if (isAudioPlaying()) {
-                            tapAt(PAUSE_X, PAUSE_Y);
-                            postStatus(pwTag + "：截图已拍完，点 (50%,20%) 暂停播放");
-                        } else {
-                            postStatus(pwTag + "：截图已拍完；当前已是暂停状态，不点 (50%,20%)");
-                        }
-                    }
+                    // 用户要求：广告/直播流程不点 (50%,20%) 暂停——开始时已静音。
 
                     // ① 像素判据：先看到过变化、又连续 2 次没变 = 读秒结束
                     int diff = sigMeanDiff(lastStripSig, sig);
@@ -1884,8 +1925,8 @@ public class AutoService extends AccessibilityService {
         }
     };
 
-    /** 第一张截图是否已拍完（拍完才点 (50%,20%) 暂停） */
-    private boolean skipTapDone = false;
+    /** 广告/直播流程自己禁的音（上拉前要恢复；用户手动禁的音不动） */
+    private boolean skipFlowMuted = false;
 
     /**
      * 用户要求：上拉之前【再截一张图确认下方已经没有读秒了】。

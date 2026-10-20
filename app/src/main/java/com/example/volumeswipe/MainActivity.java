@@ -41,7 +41,7 @@ public class MainActivity extends Activity {
         if (cbDoubao == null || sp == null) {
             return;
         }
-        boolean want = sp.getBoolean("useDoubao", true);
+        boolean want = sp.getBoolean("useDoubao", false);
         if (cbDoubao.isChecked() != want) {
             syncingDoubao = true;
             try {
@@ -127,7 +127,7 @@ public class MainActivity extends Activity {
 
         // 豆包语音输入法开关（默认勾选）
         cbDoubao = findViewById(R.id.cbDoubao);
-        cbDoubao.setChecked(sp.getBoolean("useDoubao", true));
+        cbDoubao.setChecked(sp.getBoolean("useDoubao", false));
         cbDoubao.setOnCheckedChangeListener((b, checked) -> {
             if (syncingDoubao) {
                 return; // 程序自己同步过来的勾，不当作手动操作
@@ -219,6 +219,7 @@ public class MainActivity extends Activity {
         final EditText etMicY = v.findViewById(R.id.dlgMicY);
         final EditText etListen = v.findViewById(R.id.dlgListen);
         final EditText etMicDelay = v.findViewById(R.id.dlgMicDelay);
+        final EditText etVolMs = v.findViewById(R.id.dlgVolMs);
 
         etDur.setText(String.valueOf(sp.getInt("dur", 300)));
         etGap.setText(String.valueOf(sp.getInt("gap", 2000)));
@@ -226,6 +227,7 @@ public class MainActivity extends Activity {
         etMicY.setText(String.valueOf(sp.getInt("micy", 66)));
         etListen.setText(String.valueOf(sp.getInt("listenms", 3000) / 1000));
         etMicDelay.setText(String.valueOf(sp.getInt("micdelay", 200)));
+        etVolMs.setText(String.valueOf(sp.getInt("volDoubleMs", 1500)));
 
         new AlertDialog.Builder(this)
                 .setTitle("参数设置")
@@ -237,6 +239,7 @@ public class MainActivity extends Activity {
                     int micY = clamp(parseInt(etMicY.getText().toString(), 66), 0, 100);
                     int listenSec = clamp(parseInt(etListen.getText().toString(), 3), 3, 20);
                     int micDelayMs = clamp(parseInt(etMicDelay.getText().toString(), 200), 0, 3000);
+                    int volMs = clamp(parseInt(etVolMs.getText().toString(), 1500), 500, 5000);
 
                     sp.edit()
                             .putInt("dur", durMs)
@@ -245,6 +248,7 @@ public class MainActivity extends Activity {
                             .putInt("micy", micY)
                             .putInt("listenms", listenSec * 1000)
                             .putInt("micdelay", micDelayMs)
+                            .putInt("volDoubleMs", volMs)
                             .apply();
 
                     toast("已保存");
@@ -348,7 +352,7 @@ public class MainActivity extends Activity {
         boolean ignored = isIgnoringBattery();
         boolean canOverlay = canDrawOverlays();
         boolean shakeOn = sp.getBoolean("shakeOn", true);
-        boolean doubao = sp.getBoolean("useDoubao", true);
+        boolean doubao = sp.getBoolean("useDoubao", false);
 
         String ver = "";
         try {
@@ -362,7 +366,7 @@ public class MainActivity extends Activity {
                 + "悬浮窗权限：" + (canOverlay ? "已授予 ✓" : "未授予 ✗  请点 ②") + "\n"
                 + "摇一摇：" + (shakeOn ? "已开启 ✓（只在短剧模式里起作用：只上滑）" : "已关闭") + "\n"
                 + "短剧模式：" + (sp.getBoolean("shortDrama", false)
-                        ? "已开启（只听 下集/上集/广告/直播 和自己录的命令；大/小、亮/暗、禁音/声音、录制 全局能用；说「短剧」退出）"
+                        ? "已开启（只听 下集/上集/广告/直播/停·播放 和自己录的命令；大/小、亮/暗、禁音/声音、录制 全局能用；说「短剧」退出）"
                         : "已关闭（收所有命令；说「短剧」开启；退出程序自动关）") + "\n"
                 + "唤醒动作：什么都不做（不静音、不点屏幕）\n"
                 + "修改系统设置（亮/暗）：" + (Settings.System.canWrite(this)
