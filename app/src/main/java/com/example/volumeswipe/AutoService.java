@@ -2946,8 +2946,10 @@ public class AutoService extends AccessibilityService {
         }
     }
 
-    /** 媒体音频现在是不是在响（在响 = 视频在播；暂停时一般不响） */
-    private boolean isAudioPlaying() {
+    /** 媒体音频现在是不是在响（在响 = 视频在播；暂停时一般不响）。
+     *  单字命令（停/放/大/小/亮/暗）和摇一摇都用它把关：
+     *  没在播的时候听到/摇到什么都不做。 */
+    public boolean isAudioPlaying() {
         try {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             return am != null && am.isMusicActive();

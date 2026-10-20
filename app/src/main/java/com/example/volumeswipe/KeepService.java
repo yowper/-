@@ -395,12 +395,12 @@ public class KeepService extends Service {
                     float y = event.values[1];
                     float z = event.values[2];
                     float g = (float) Math.sqrt(x * x + y * y + z * z) / 9.81f;
-                    // 真摇 = 700ms 内连续凑够 3 个超过 1.8g 的峰。
-                    // 以前是“单次 > 2.2g 就触发”，结果拿手机、放手机、
-                    // 甚至通知振动一下都可能当成摇一摇（用户反馈的“莫名上拉”）。
-                    if (g > 1.8f) {
+                    // 真摇 = 900ms 内连续凑够 3 个超过 2.6g 的峰（幅度不能太小）。
+                    // 以前是“单次 > 2.2g 就触发”，拿手机、放手机、
+                    // 甚至通知振动一下都算（用户反馈的“莫名上拉”）。
+                    if (g > 2.6f) {
                         long now = System.currentTimeMillis();
-                        if (now - shakeWindowAt > 700) {
+                        if (now - shakeWindowAt > 900) {
                             shakeWindowAt = now;
                             shakePeaks = 0;
                         }
@@ -435,6 +435,12 @@ public class KeepService extends Service {
             // 正在识别一轮命令（框/键盘在身上）时不要动手：
             // 摇一下手机就把整轮搞乱，用户根本没预期
             if (!svc.isIdle()) {
+                return;
+            }
+            // 用户要求：摇一摇也只有在【真的有视频/声音在播】时才动手
+            // （跟单字命令一个标准：页面没在放的时候摇了什么都不做）
+            if (!svc.isAudioPlaying()) {
+                KeepService.note("摇一摇忽略了：现在没有视频/声音在播");
                 return;
             }
             // 摇一摇 = 点 (50%,20%) 暂停 → 600ms 后上滑
