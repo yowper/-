@@ -2719,6 +2719,16 @@ public class AutoService extends AccessibilityService {
                     + "」，按防误听忽略（" + (OPPOSITE_GUARD_MS / 1000) + " 秒内不反向）");
             return;
         }
+        // 用户要求：一个字就说完的命令（停 / 放 / 大 / 小 / 亮 / 暗）
+        // 只有在【真的有视频/声音在播】时才执行；
+        // 安静环境下本地引擎的幻觉、或视频根本没在放时的偶然一声，
+        // 都不该真地动屏幕/调音量。
+        String nt = Commands.normalize(text);
+        if (nt.length() == 1 && !isAudioPlaying()) {
+            KeepService.note("听到了「" + text + "」，但没执行：现在没有视频/声音在播"
+                    + "（单字命令只在播放时才动）");
+            return;
+        }
         lastExecCmd = cmd;
         lastExecAt = nowMs;
         lastExecText = text;
