@@ -219,6 +219,7 @@ public class AutoService extends AccessibilityService {
     @Override
     public void onDestroy() {
         sInstance = null;
+        removeStatusStripNow();
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -2309,6 +2310,87 @@ public class AutoService extends AccessibilityService {
                 KeepService.note(s);
             }
         });
+        showStatusStrip(s);
+    }
+
+    // ==================== 屏幕下方状态条 ====================
+
+    /**
+     * 屏幕下方的状态条（自己画，不用 Toast）。
+     *
+     * 为什么不用 Toast：Toast 一定出现在屏幕最下方，正好盖住读秒那一行，
+     * 而且它会被我们的截屏拍进去，OCR 可能把提示文字当成读秒 → 所以
+     * 「退出广告 / 退出直播 / 测试读秒」以前根本没任何屏幕提示。
+     *
+     * 现在这条子：
+     * ① 位置在屏幕 79% 处（底边留出 21%）——读秒行（约 96%）能完整看见；
+     * ② 它没进 OCR 区域（只读最下方 20%）也没进像素比对区域（最下方 12%），
+     *    所以不会干扰读秒判断；
+     * ③ 不抢触摸（FLAG_NOT_TOUCHABLE），不抢焦点；
+     * ④ 3 秒后自动消失。
+     */
+    private android.widget.TextView statusStrip;
+
+    private void showStatusStrip(final String text) {
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (wm == null) {
+                        wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+                    }
+                    int[] s = screen();
+                    if (wm == null || s == null || text == null || text.length() == 0) {
+                        return;
+                    }
+                    if (statusStrip == null) {
+                        android.widget.TextView tv = new android.widget.TextView(AutoService.this);
+                        tv.setTextColor(0xFFFFFFFF);
+                        tv.setTextSize(12f);
+                        tv.setPadding(28, 12, 28, 12);
+                        tv.setBackgroundColor(0xCC000000);
+                        tv.setMaxWidth((int) (s[0] * 0.94f));
+                        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                                WindowManager.LayoutParams.WRAP_CONTENT,
+                                WindowManager.LayoutParams.WRAP_CONTENT,
+                                winType(),
+                                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                                PixelFormat.TRANSLUCENT);
+                        lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+                        lp.y = (int) (s[1] * 0.21f);
+                        statusStrip = tv;
+                        wm.addView(statusStrip, lp);
+                    }
+                    statusStrip.setText(text);
+                    handler.removeCallbacks(hideStatusStripTask);
+                    handler.postDelayed(hideStatusStripTask, 3000);
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+    }
+
+    private final Runnable hideStatusStripTask = new Runnable() {
+        @Override
+        public void run() {
+            removeStatusStripNow();
+        }
+    };
+
+    private void removeStatusStripNow() {
+        try {
+            handler.removeCallbacks(hideStatusStripTask);
+        } catch (Exception ignored) {
+        }
+        if (statusStrip != null && wm != null) {
+            try {
+                wm.removeView(statusStrip);
+            } catch (Exception ignored) {
+            }
+        }
+        statusStrip = null;
     }
 
     // ==================== 豆包面板兑底 ====================
@@ -2797,6 +2879,9 @@ public class AutoService extends AccessibilityService {
         lastExecCmd = cmd;
         lastExecAt = nowMs;
         lastExecText = text;
+        // 屏幕下方也提示一句（用户要求：听到命令要能看到，
+        // 像广告/直播这种以前什么提示都没有）
+        showStatusStrip("听到「" + text + "」");
         // 用户要求：不管什么命令，第一个动作都是「再点一下 (50%,20%) 让暂停结束」，
         // 然后才执行命令本身。（继续播放自己就是那一下，不再重复。）
         // pausedByUs=true 说明是喊「嗨小白」时我们暂停的，那一下才需要解除。
@@ -3396,6 +3481,7 @@ public class AutoService extends AccessibilityService {
             phase = PHASE_IDLE;
             removeBox();
             removePickerMic();
+            removeStatusStripNow();
             hideProbePanel();
             handler.removeCallbacksAndMessages(null);
             if (KeepService.instance() != null) {
@@ -3414,6 +3500,9 @@ public class AutoService extends AccessibilityService {
     private void toastResult(int cmd, String s) {
         if (cmd == Commands.CMD_SKIP_AD || cmd == Commands.CMD_EXIT_LIVE
                 || cmd == Commands.CMD_TEST_SECONDS) {
+            // 不弹 Toast（它在屏幕最下方，盖住读秒那一行）——
+            // 改用屏幕下方 79% 处的状态条，既不挡读秒又能看到
+            showStatusStrip(s);
             return;
         }
         toast(s);
