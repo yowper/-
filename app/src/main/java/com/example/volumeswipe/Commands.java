@@ -30,6 +30,8 @@ public final class Commands {
     public static final int CMD_RECORDED = 19;      // 自己录制的命令（名字→一串点/划动作）
     public static final int CMD_DRAMA_TOGGLE = 20;  // 「短剧」：像「豆包」一样，说一声切换短剧模式
     public static final int CMD_RECORD_TOGGLE = 21; // 「录制」：开始录制动作（录制中再说=结束并弹框起名）
+    public static final int CMD_SOUND_OFF = 22;     // 「禁音」：关掉声音（接电话前用）
+    public static final int CMD_SOUND_ON = 23;      // 「声音」：恢复刚才的音量
 
     private static final String[] KW_EXIT = {
             "小白再见", "再见小白", "小白拜拜"
@@ -103,6 +105,14 @@ public final class Commands {
     private static final String[] KW_RECORD = {
             "录制", "开始录制", "录制动作", "录制命令"
     };
+    /** 禁音：关掉声音（接电话前用）。放在 音量大/小 之后判，避免抢走「声音大」 */
+    private static final String[] KW_SOUND_OFF = {
+            "禁音", "静音", "关声音", "关闭声音", "没声音", "声音关掉"
+    };
+    /** 恢复声音：整句只说「声音」也算（说「声音大/小」不会走到这里，前面先判了） */
+    private static final String[] KW_SOUND_ON = {
+            "声音", "恢复声音", "打开声音", "开声音", "要声音", "有声音"
+    };
 
     private Commands() {
     }
@@ -115,7 +125,7 @@ public final class Commands {
                 KW_PREV, KW_NEXT, KW_VOL_UP, KW_VOL_DOWN,
                 KW_BRIGHT_UP, KW_BRIGHT_DOWN,
                 KW_DOUBAO_ON, KW_DOUBAO_OFF, KW_TEST_SECONDS, KW_TOGGLE_PLAY, KW_DRAMA,
-                KW_RECORD
+                KW_RECORD, KW_SOUND_OFF, KW_SOUND_ON
         };
         for (String[] arr : all) {
             for (String k : arr) {
@@ -256,6 +266,15 @@ public final class Commands {
         if (hit(t, KW_VOL_DOWN) || matchOne(t) == CMD_VOL_DOWN) {
             return CMD_VOL_DOWN;
         }
+        // 禁音 / 恢复声音（用户要求：接电话时要把音乐关掉）。
+        // 必须在 声量大/小 之后判，否则「声音」会把「声音大」抢走；
+        // 也要在 打开/启动 兑底之前，否则「打开声音」会被当成开 App
+        if (hit(t, KW_SOUND_OFF)) {
+            return CMD_SOUND_OFF;
+        }
+        if (hit(t, KW_SOUND_ON)) {
+            return CMD_SOUND_ON;
+        }
         // 停 / 继续 / 播放 / 继续播放：用户要求合成【同一条命令】= (50%,20%) 点一下
         if (hit(t, KW_TOGGLE_PLAY) || matchOne(t) == CMD_TOGGLE_PLAY) {
             return CMD_TOGGLE_PLAY;
@@ -357,6 +376,10 @@ public final class Commands {
                 return "短剧模式（开/关）";
             case CMD_RECORD_TOGGLE:
                 return "录制动作（开始/结束）";
+            case CMD_SOUND_OFF:
+                return "禁音（关声音）";
+            case CMD_SOUND_ON:
+                return "恢复声音";
             default:
                 return "";
         }

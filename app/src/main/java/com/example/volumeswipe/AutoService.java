@@ -415,7 +415,7 @@ public class AutoService extends AccessibilityService {
         boolean old = shortDramaOn();
         getSharedPreferences("cfg", MODE_PRIVATE).edit().putBoolean("shortDrama", on).apply();
         if (old != on) {
-            postStatus(on ? "短剧模式：已开启（只听 下集 / 上集 / 广告 / 直播 和自己录的命令）"
+            postStatus(on ? "短剧模式：已开启（只听 下集 / 上集 / 广告 / 直播、声音大/小、禁音/声音 和自己录的命令）"
                     : "短剧模式：已关闭（恢复接收所有命令）");
             KeepService.note((on ? "短剧模式已开启" : "短剧模式已关闭")
                     + (why == null || why.length() == 0 ? "" : "：" + why));
@@ -423,12 +423,16 @@ public class AutoService extends AccessibilityService {
     }
 
     /** 短剧模式允许的命令：下一集 / 上一集 / 广告 / 直播
-     *  再加「短剧」（再说一次就退出短剧模式）和「小白再见」（安全阀）；
-     *  自己录的命令不在这里面 —— resolveCmd 里它优先放行（用户要求：录的就是拿来退广告的） */
+     *  + 禁音/声音（用户要求：接电话要把音乐关掉）
+     *  + 「短剧」（再说一次就退出短剧模式）+「小白再见」（安全阀）。
+     *  声量大/小不在这里面 —— resolveCmd 里单独放行【两个字以上】的说法
+     *  （声音大/声音小 ✓；单字 大/小 容易被台词撞上，短剧模式里仍然挡掉）。
+     *  自己录的命令也不在这里面 —— resolveCmd 里它优先放行 */
     private static boolean isDramaCmd(int cmd) {
         return cmd == Commands.CMD_NEXT || cmd == Commands.CMD_PREV
                 || cmd == Commands.CMD_SKIP_AD || cmd == Commands.CMD_EXIT_LIVE
                 || cmd == Commands.CMD_DRAMA_TOGGLE
+                || cmd == Commands.CMD_SOUND_OFF || cmd == Commands.CMD_SOUND_ON
                 || cmd == Commands.CMD_EXIT;
     }
 
@@ -454,9 +458,12 @@ public class AutoService extends AccessibilityService {
             return Commands.CMD_RECORDED;
         }
         if (shortDramaOn()) {
-            if (cmd != Commands.CMD_NONE && !isDramaCmd(cmd)) {
+            // 音量：两个字以上的说法放行（声音大/声音小/音量大…），单字 大/小 仍然不要
+            boolean volOk = (cmd == Commands.CMD_VOL_UP || cmd == Commands.CMD_VOL_DOWN)
+                    && t.length() >= 2;
+            if (cmd != Commands.CMD_NONE && !isDramaCmd(cmd) && !volOk) {
                 if (verbose) {
-                    KeepService.note("短剧模式：只听 下集/上集/广告/直播 和自己录的命令，「"
+                    KeepService.note("短剧模式：只听 下集/上集/广告/直播、声音大/小、禁音/声音 和自己录的命令，「"
                             + t + "」（" + Commands.nameOf(cmd) + "）不接收；说「短剧」可退出短剧模式");
                 }
                 return Commands.CMD_NONE;
@@ -3761,11 +3768,75 @@ public class AutoService extends AccessibilityService {
                 }
                 break;
             }
+            case Commands.CMD_SOUND_OFF:
+                // 用户要求：接电话时要把音乐关掉 → 立刻禁音（不走恢复播放那套，要快）
+                setMediaMute(true);
+                break;
+            case Commands.CMD_SOUND_ON:
+                setMediaMute(false);
+                break;
             case Commands.CMD_EXIT:
                 shutdownAll();
                 break;
             default:
                 break;
+        }
+    }
+
+    /**
+     * 禁音 / 恢复声音（用户要求：接电话时要把音乐关掉）。
+     * 禁音时记住当时的媒体音量，「声音」一键恢复；
+     * 故意不加“成对命令反向锁”——接完电话要马上能恢复。
+     */
+    private void setMediaMute(boolean mute) {
+        try {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) {
+                KeepService.note("禁音/恢复失败：拿不到 AudioManager");
+                return;
+            }
+            int stream = AudioManager.STREAM_MUSIC;
+            SharedPreferences sp = getSharedPreferences("cfg", MODE_PRIVATE);
+            int before = am.getStreamVolume(stream);
+            if (mute) {
+                sp.edit().putInt("volBeforeMute", before)
+                        .putBoolean("soundMuted", true).apply();
+                am.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, 0);
+                String msg = "禁音：媒体音量 " + before + " → " + am.getStreamVolume(stream);
+                if (am.getStreamVolume(stream) > 0) {
+                    // 有的机型 MUTE 不动音量条：直接置 0
+                    try {
+                        am.setStreamVolume(stream, 0, 0);
+                        msg += "；已直接置 0 → " + am.getStreamVolume(stream);
+                    } catch (Throwable t2) {
+                        msg += "；置 0 失败：" + t2.getClass().getSimpleName();
+                    }
+                }
+                msg += "（说「声音」恢复）";
+                KeepService.note(msg);
+                postStatus("已禁音（说「声音」恢复）");
+            } else {
+                int vol = sp.getInt("volBeforeMute", -1);
+                boolean wasMuted = sp.getBoolean("soundMuted", false);
+                sp.edit().putBoolean("soundMuted", false).apply();
+                if (wasMuted && vol > 0) {
+                    try {
+                        am.setStreamVolume(stream, vol, 0);
+                    } catch (Throwable t2) {
+                        am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0);
+                    }
+                    KeepService.note("恢复声音：媒体音量 → " + am.getStreamVolume(stream)
+                            + "（禁音前是 " + vol + "）");
+                } else {
+                    am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0);
+                    KeepService.note("恢复声音：媒体音量 → " + am.getStreamVolume(stream)
+                            + "（之前没禁过音，只是解除静音）");
+                }
+                postStatus("已恢复声音");
+            }
+        } catch (Throwable e) {
+            KeepService.note("禁音/恢复出错：" + e.getClass().getSimpleName()
+                    + " " + e.getMessage());
         }
     }
 
