@@ -33,3 +33,4 @@ err.txt
 
 # ── 注意：app/src/main/assets/model-cn/ 是 Vosk 中文模型（约 65MB），
 #    编译时必须要有，【不要】加到 .gitignore 里。
+Git-*.exe
