@@ -41,7 +41,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:text="音量下键双击间隔（毫秒）：两下间隔小于它 = 上拉（下一集）并自动恢复音量"
+            android:text="蓝牙耳机音量下调两次识别间隔（毫秒）：窗口内两次下调 = 上拉（下一集）并自动还原音量（只在短剧模式）"
             android:textStyle="bold" />
 
         <EditText

@@ -2,8 +2,10 @@ package com.example.volumeswipe;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -22,7 +24,6 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
-import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -224,6 +225,8 @@ public class AutoService extends AccessibilityService {
                     .putBoolean("shortDrama", false).apply();
         } catch (Throwable ignored) {
         }
+        // 蓝牙耳机音量下调两次（短剧模式=上拉）靠监听系统音量变化
+        registerVolChangeReceiver();
         // 录制模式：用户自己录的命令名要先进词表（说得出、听得懂）
         try {
             RecordedCmds.reload(this);
@@ -243,20 +246,14 @@ public class AutoService extends AccessibilityService {
     public void onInterrupt() {
     }
 
-    // ==================== 手机音量下键双击 ====================
-    // 用户要求：连着两下【音量下键】= 分模式动作：
-    //   短剧模式 = 下集（上拉）；非短剧模式 = 下一页（点 85%,85%，翻书）。
-    // 同时自动恢复音量（等于自动按了两下音量上键，把两下降的补回去）。
-    // 蓝牙耳机的音量键手机收不到（在耳机本地调音量），所以耳机上双击只会变音量、不会触发。
-    // 做法：第一下放行（音量正常降）、记住当时的音量；第二下吞掉 + 触发动作 + 恢复音量。
-    // 两下的最大间隔可以在 ⚙ 参数设置里改（毫秒），改了自动记住；默认 1500。
+    // ==================== 蓝牙耳机音量下调两次（只在短剧模式） ====================
+    // 用户要求：手机音量键双击那条命令删掉（没实现）；但蓝牙耳机在耳机上把音量调小，
+    // 手机这边看得到媒体音量在变小 —— 所以改成监听系统音量变化：
+    //   短剧模式 + 一定时间内（⚙ 可改，默认 1500ms）连续两次音量下调
+    //   = 执行上拉命令（下一集），同时把音量还原（等于音量大一点按两次）。
+    // 非短剧模式：音量变化就是调音量，不做任何动作。
 
-    private long lastVolKeyAt = 0;
-    private boolean volConsumeUp = false;
-    /** 双击前（第一下按下时）的媒体音量，触发后恢复用它 */
-    private int volBeforeDoubleDown = -1;
-
-    /** 两下之间的最大间隔（用户可改、自动记住；默认 1500，限 500~5000） */
+    /** 音量下调两次的识别窗口（用户可改、自动记住；默认 1500，限 500~5000） */
     private long volDoubleMs() {
         int v = getSharedPreferences("cfg", MODE_PRIVATE).getInt("volDoubleMs", 1500);
         if (v < 500) {
@@ -268,97 +265,114 @@ public class AutoService extends AccessibilityService {
         return v;
     }
 
-    @Override
-    protected boolean onKeyEvent(KeyEvent event) {
+    private BroadcastReceiver volChangeReceiver;
+    private int lastKnownVol = -1;
+    private long firstVolDropAt = 0;
+    /** 两次下调之前（第一次下调时）的媒体音量，触发后还原用它 */
+    private int volBeforeBtDrops = -1;
+
+    /** 监听系统音量变化（注册在 onServiceConnected，注销在 onDestroy/shutdownAll） */
+    private void registerVolChangeReceiver() {
         try {
-            if (event == null || event.getKeyCode() != KeyEvent.KEYCODE_VOLUME_DOWN) {
-                return false;
+            if (volChangeReceiver != null) {
+                return;
             }
-            if (event.getAction() == KeyEvent.ACTION_UP) {
-                boolean eat = volConsumeUp;
-                volConsumeUp = false;
-                return eat; // 第二下的 UP 也要吞，不然系统侧音量处理可能不一致
-            }
-            if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() > 0) {
-                return false;
-            }
-            long now = System.currentTimeMillis();
-            if (now - lastVolKeyAt <= volDoubleMs() && lastVolKeyAt > 0) {
-                // 第二下：触发下滑 + 自动恢复音量，并吞掉这次按键
-                lastVolKeyAt = 0;
-                volConsumeUp = true;
-                handler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        onDoubleVolumeDown();
+            volChangeReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    try {
+                        if (intent == null || !"android.media.VOLUME_CHANGED_ACTION"
+                                .equals(intent.getAction())) {
+                            return;
+                        }
+                        int stream = intent.getIntExtra(
+                                "android.media.EXTRA_VOLUME_STREAM_TYPE", -1);
+                        if (stream != AudioManager.STREAM_MUSIC) {
+                            return;
+                        }
+                        int newVol = intent.getIntExtra(
+                                "android.media.EXTRA_VOLUME_STREAM_VALUE", -1);
+                        if (newVol < 0) {
+                            return;
+                        }
+                        if (lastKnownVol >= 0 && newVol < lastKnownVol) {
+                            onVolumeDropped(lastKnownVol);
+                        }
+                        lastKnownVol = newVol;
+                    } catch (Throwable ignored) {
                     }
-                });
-                return true;
-            }
-            // 第一下：记住双击前的音量（恢复用），照常放行（音量正常降）
-            lastVolKeyAt = now;
-            try {
-                AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                if (am != null) {
-                    volBeforeDoubleDown = am.getStreamVolume(AudioManager.STREAM_MUSIC);
                 }
-            } catch (Throwable ignored) {
-            }
-            return false;
+            };
+            registerReceiver(volChangeReceiver,
+                    new IntentFilter("android.media.VOLUME_CHANGED_ACTION"));
+            KeepService.note("已在监听音量变化（短剧模式：下调两次=上拉）");
         } catch (Throwable t) {
-            return false;
+            KeepService.note("音量监听注册失败：" + t.getClass().getSimpleName());
         }
     }
 
-    /** 手机音量下键连按两下 = 分模式动作 + 自动恢复音量（等于自动按两下音量上键）：
-     *  短剧模式 = 下集（上拉）；非短剧模式 = 下一页（点 85%,85%，翻书） */
-    private void onDoubleVolumeDown() {
+    private void unregisterVolChangeReceiver() {
         try {
-            if (!isIdle()) {
-                KeepService.note("音量下键两下忽略了：正在识别一轮命令");
-                return;
+            if (volChangeReceiver != null) {
+                unregisterReceiver(volChangeReceiver);
+                volChangeReceiver = null;
             }
-            boolean drama = shortDramaOn();
-            KeepService.note("手机音量下键按了两下 → "
-                    + (drama ? "上拉（下一集）" : "下一页（翻书）") + "，音量自动恢复");
-            // 自动恢复音量（用户要求：等于自动按两下音量上键，把降掉的补回去）
-            if (volBeforeDoubleDown > 0) {
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 检测到一次音量下调（before = 下调前的音量） */
+    private void onVolumeDropped(int before) {
+        long now = System.currentTimeMillis();
+        if (firstVolDropAt == 0 || now - firstVolDropAt > volDoubleMs()) {
+            // 第一次下调（或离上次太久，重新计时）
+            firstVolDropAt = now;
+            volBeforeBtDrops = before;
+            return;
+        }
+        // 窗口内的第二次下调
+        firstVolDropAt = 0;
+        final int volBefore = volBeforeBtDrops;
+        volBeforeBtDrops = -1;
+        if (!shortDramaOn()) {
+            return; // 用户要求：只在短剧模式起作用
+        }
+        if (!isIdle()) {
+            KeepService.note("耳机音量下调两次忽略了：正在识别一轮命令");
+            return;
+        }
+        KeepService.note("蓝牙耳机音量下调了两次 → 上拉（下一集），音量自动还原");
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                // 音量大一点执行两次：直接还原到下调前的值（效果一样且更准）
                 try {
                     AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                    if (am != null) {
-                        int now = am.getStreamVolume(AudioManager.STREAM_MUSIC);
-                        if (now < volBeforeDoubleDown) {
-                            am.setStreamVolume(AudioManager.STREAM_MUSIC, volBeforeDoubleDown, 0);
+                    if (am != null && volBefore > 0) {
+                        int now2 = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                        if (now2 < volBefore) {
+                            am.setStreamVolume(AudioManager.STREAM_MUSIC, volBefore, 0);
                             getSharedPreferences("cfg", MODE_PRIVATE).edit()
                                     .putBoolean("soundMuted", false).apply();
-                            KeepService.note("音量已自动恢复：" + now + " → "
+                            KeepService.note("音量已自动还原：" + now2 + " → "
                                     + am.getStreamVolume(AudioManager.STREAM_MUSIC)
-                                    + "（双击前是 " + volBeforeDoubleDown + "）");
+                                    + "（等于音量大一点按两次，下调前是 " + volBefore + "）");
                         }
                     }
                 } catch (Throwable t2) {
-                    KeepService.note("音量恢复失败：" + t2.getClass().getSimpleName());
+                    KeepService.note("音量还原失败：" + t2.getClass().getSimpleName());
                 }
-                volBeforeDoubleDown = -1;
-            }
-            // 分模式：短剧 = 上拉（下一集）；非短剧 = 下一页（翻书）。只滑一次的锁、防重都照常生效
-            if (drama) {
-                if (executeCommand(Commands.CMD_NEXT, "音量下键两下")) {
-                    toastResult(Commands.CMD_NEXT, "音量下键两下：上拉（下一集）");
-                }
-            } else {
-                if (executeCommand(Commands.CMD_PAGE_DOWN, "音量下键两下")) {
-                    toastResult(Commands.CMD_PAGE_DOWN, "音量下键两下：下一页（翻书）");
+                if (executeCommand(Commands.CMD_NEXT, "耳机音量下调两次")) {
+                    toastResult(Commands.CMD_NEXT, "耳机两下调音量：上拉（下一集）");
                 }
             }
-        } catch (Throwable t) {
-            KeepService.note("音量键双击处理出错：" + t.getClass().getSimpleName());
-        }
+        });
     }
 
     @Override
     public void onDestroy() {
         sInstance = null;
+        unregisterVolChangeReceiver();
         removeStatusStripNow();
         removeRecLayer();
         removeNamingLayer();
@@ -1846,20 +1860,16 @@ public class AutoService extends AccessibilityService {
                                 pwSawCountdown = true;
                                 pwOcrMiss = 0;
                                 pwSeenSec = sec;
-                                // 用户定稿：只减 1 秒。
-                                // 宁可晚 1 秒也不能早：广告锁定期间早滑 = 白滑；
-                                // 晚一秒广告解锁后照样能滑走。
-                                int wait = sec - 1;
-                                if (wait < 0) {
-                                    wait = 0;
-                                }
+                                // 用户要求：不减 1 秒 —— 读到几秒就等几秒
+                                //（以前减 1 秒是怕读秒过时，用户实测早滑会撞上广告锁，不减更稳）。
+                                int wait = sec;
                                 pwWaitSec = wait;
                                 handler.removeCallbacks(pwDeadlineTask);
                                 if (wait <= 0) {
                                     done = true;
                                     strip.recycle();
                                     finishPixelWatch("读秒只剩 " + sec
-                                            + " 秒（截图已经花掉时间了），不等了直接上滑");
+                                            + " 秒，不等了直接上滑");
                                 } else {
                                     pwEndAt = now + (long) wait * 1000;
                                     handler.postDelayed(pwDeadlineTask, (long) wait * 1000);
@@ -4214,6 +4224,7 @@ public class AutoService extends AccessibilityService {
     /** 收到「关闭小助手」：把一切收干净 */
     public void shutdownAll() {
         try {
+            unregisterVolChangeReceiver();
             getSharedPreferences("cfg", MODE_PRIVATE).edit()
                     .putBoolean("enabled", false)
                     .putBoolean("shortDrama", false).apply(); // 用户要求：退出程序自动关短剧模式
