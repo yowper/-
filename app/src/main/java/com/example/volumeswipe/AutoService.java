@@ -1353,6 +1353,14 @@ public class AutoService extends AccessibilityService {
         skipWatching = true;
         swipeChainActive = false;
         swipesDone = 0;
+        // 用户要求：先点一下 (50%,20%) —— 就是暂停播放，再开始读秒。
+        // （已经在暂停状态就不点：再点一下反而会把它放起来）
+        if (isAudioPlaying()) {
+            tapAt(PAUSE_X, PAUSE_Y);
+            postStatus(tag + "：先点 (50%,20%) 暂停播放，然后读读秒");
+        } else {
+            postStatus(tag + "：当前已是暂停状态，不点 (50%,20%)，直接读读秒");
+        }
         postStatus(tag + "：截屏读读秒（屏幕下方 20%）");
         // Android 11+ 一律先走截屏 + OCR：只有它能真的读到
         // 「10 秒后可继续看下一集」里的秒数。
@@ -1421,8 +1429,9 @@ public class AutoService extends AccessibilityService {
     }
 
     /**
-     * 上滑一次，验证；没生效就补滑（最多 4 次，每次隔 1.5 秒）。
-     * 注意：广告读秒期间广告是锁着的，那时上滑是白滑，必须补滑直到页面真的变了。
+     * 上滑一次，验证；没生效就补滑（最多 4 次）。
+     * 注意：广告读秒期间广告是锁着的，那时上滑是白滑，
+     * 所以滑完 1 秒要截图核对一次（看是否还在广告里 / 页面是否没变）。
      */
     private void swipeAndVerify(final String tag, final int[] left,
                                 final java.util.ArrayList<String>[] snap) {
@@ -1461,30 +1470,94 @@ public class AutoService extends AccessibilityService {
                     swipeChainActive = false;
                     return;
                 }
-                boolean looksFailed = swipeLooksFailed(snap[0]);
-                // 广告读秒期间广告是锁着的：那时候上滑会白滑（用户日志里
-                // 「页面看起来没变」就是这么来的）。所以没生效就补滑，最多 4 次。
-                if (looksFailed && swipesDone < SKIP_MAX_SWIPES) {
-                    postStatus(tag + "：第 " + swipesDone + " 次看起来没生效 → 1.5 秒后再滑");
-                    snap[0] = screenTextSnapshot();
-                    handler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (skipWatching) {
-                                swipeStep(tag, left, snap);
+                final boolean textFailed = swipeLooksFailed(snap[0]);
+                // 用户要求：上滑后 1 秒再截一张图核对 ——
+                //  ① 下方还能读到读秒 = 还在广告里 → 再上拉
+                //  ② 整屏几乎没变化 = 页面没动 → 再上拉
+                // （视频 App 的无障碍文字读不到，光靠 swipeLooksFailed 永远算“成功”）
+                captureScreenThumb(new BitmapCallback() {
+                    @Override
+                    public void onBitmap(Bitmap bmp, String error) {
+                        if (!skipWatching) {
+                            if (bmp != null) {
+                                bmp.recycle();
                             }
+                            swipeChainActive = false;
+                            return;
                         }
-                    }, 1500);
-                    return;
-                }
-                skipWatching = false;
-                swipeChainActive = false;
-                handler.removeCallbacks(pwDeadlineTask);
-                handler.removeCallbacks(pixelLoop);
-                postStatus(tag + "：完成（共上滑 " + swipesDone + " 次"
-                        + (looksFailed ? "；页面看起来还是没变（广告可能还没结束？）" : "") + "）");
+                        boolean pageSame = false;
+                        Bitmap stripTmp = null;
+                        if (bmp != null) {
+                            int[] sig = stripSignature(bmp);
+                            if (lastStripSig != null) {
+                                pageSame = sigMeanDiff(lastStripSig, sig) == 0;
+                            }
+                            lastStripSig = sig;
+                            stripTmp = cropBottom(bmp, REGION_TOP_FRAC);
+                            bmp.recycle();
+                        }
+                        final Bitmap strip = stripTmp;
+                        final boolean pageSameF = pageSame;
+                        if (strip == null) {
+                            // 截不到图（老系统/拿不到截屏权限）→ 只能按无障碍文字判
+                            swipeVerdict(tag, left, snap, textFailed, pageSameF, -1);
+                            return;
+                        }
+                        Ocr.run(strip, new Ocr.Cb() {
+                            @Override
+                            public void onText(String text) {
+                                if (!skipWatching) {
+                                    strip.recycle();
+                                    swipeChainActive = false;
+                                    return;
+                                }
+                                int sec = readSeconds(Commands.normalize(text));
+                                strip.recycle();
+                                swipeVerdict(tag, left, snap, textFailed, pageSameF, sec);
+                            }
+                        });
+                    }
+                });
             }
-        }, 3000);
+        }, 1000);
+    }
+
+    /**
+     * 一次上滑的账算完：
+     * 没生效（还在广告里 / 页面没变）→ 0.8 秒后再上滑，最多 SKIP_MAX_SWIPES 次；
+     * 否则收尾。
+     */
+    private void swipeVerdict(final String tag, final int[] left,
+                              final java.util.ArrayList<String>[] snap,
+                              final boolean textFailed, final boolean pageSame,
+                              final int adSec) {
+        if (!skipWatching) {
+            swipeChainActive = false;
+            return;
+        }
+        boolean failed = textFailed || pageSame || adSec >= 0;
+        String why = adSec >= 0
+                ? ("1 秒后下方还能读到读秒 " + adSec + " 秒（还在广告里）")
+                : (pageSame ? "1 秒内页面没变化" : "无障碍文字也没变");
+        if (failed && swipesDone < SKIP_MAX_SWIPES) {
+            postStatus(tag + "：第 " + swipesDone + " 次看起来没生效（" + why + "）→ 0.8 秒后再滑");
+            snap[0] = screenTextSnapshot();
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (skipWatching) {
+                        swipeStep(tag, left, snap);
+                    }
+                }
+            }, 800);
+            return;
+        }
+        skipWatching = false;
+        swipeChainActive = false;
+        handler.removeCallbacks(pwDeadlineTask);
+        handler.removeCallbacks(pixelLoop);
+        postStatus(tag + "：完成（共上滑 " + swipesDone + " 次"
+                + (failed ? "；" + why + "（广告可能还没结束？）" : "") + "）");
     }
 
     /** 最多补滑几次（防“白滑”，也不再无限连拉） */
@@ -1597,11 +1670,13 @@ public class AutoService extends AccessibilityService {
                                 }
                             } else {
                                 pwOcrMiss++;
-                                // 下方压根没有读秒文字：不要干等，直接上滑
-                                if (!pwSawCountdown && pwOcrMiss >= 2) {
+                                // 用户要求：读不到秒数就直接上拉。
+                                // （万一真是看走了眼提前滑了也没关系：
+                                //   上滑后 1 秒还会截图核对，还在广告里就再拉）
+                                if (!pwSawCountdown) {
                                     done = true;
                                     strip.recycle();
-                                    finishPixelWatch("下方没有读秒文字，直接上滑");
+                                    finishPixelWatch("下方没有读秒文字（无秒），直接上滑");
                                 }
                             }
                             if (!done) {
@@ -1610,8 +1685,9 @@ public class AutoService extends AccessibilityService {
                             if (done) {
                                 return;
                             }
-                            if (pwSawCountdown && pwOcrMiss >= 2) {
-                                finishPixelWatch("读秒已经消失");
+                            // 之前读到过读秒、现在没了 = 跳秒结束了 → 直接上拉
+                            if (pwSawCountdown && pwOcrMiss >= 1) {
+                                finishPixelWatch("读秒已经消失（跳秒结束）");
                                 return;
                             }
                             if (pwEndAt > 0 && now >= pwEndAt) {
