@@ -24,37 +24,18 @@ public class MainActivity extends Activity {
 
     private TextView tvStatus;
     private CheckBox cbDoubao;
-    private CheckBox cbDrama;
     private SharedPreferences sp;
     private boolean syncingDoubao = false;
-    private boolean syncingDrama = false;
     private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
 
-    /** 语音说了「打开豆包 / 关闭豆包」之后，设置里那个勾也要跟着变；
-     *  短剧模式听到「嗨小白」会自动退出，勾也要跟着变 */
+    /** 语音说了「打开豆包 / 关闭豆包」之后，设置里那个勾也要跟着变 */
     private final Runnable syncDoubaoTask = new Runnable() {
         @Override
         public void run() {
             syncDoubaoCheck();
-            syncDramaCheck();
             ui.postDelayed(this, 800);
         }
     };
-
-    private void syncDramaCheck() {
-        if (cbDrama == null || sp == null) {
-            return;
-        }
-        boolean want = sp.getBoolean("shortDrama", false);
-        if (cbDrama.isChecked() != want) {
-            syncingDrama = true;
-            try {
-                cbDrama.setChecked(want);
-            } finally {
-                syncingDrama = false;
-            }
-        }
-    }
 
     private void syncDoubaoCheck() {
         if (cbDoubao == null || sp == null) {
@@ -140,23 +121,7 @@ public class MainActivity extends Activity {
 
         // 唤醒动作：什么都不做（不静音、不点屏幕）
 
-        // 🎬 短剧模式：只收 下集/上集/广告/直播，听到「嗨小白」自动退出
-        cbDrama = findViewById(R.id.cbDrama);
-        cbDrama.setChecked(sp.getBoolean("shortDrama", false));
-        cbDrama.setOnCheckedChangeListener((b, checked) -> {
-            if (syncingDrama) {
-                return; // 程序自己同步过来的勾，不当作手动操作
-            }
-            sp.edit().putBoolean("shortDrama", checked).apply();
-            AutoService svc = AutoService.get();
-            if (svc != null) {
-                svc.setShortDrama(checked, "主界面手动" + (checked ? "勾选" : "取消勾选"));
-            }
-            toast(checked
-                    ? "短剧模式已开启：只听 下集 / 上集 / 广告 / 直播（听到「嗨小白」自动退出）"
-                    : "短剧模式已关闭：恢复正常接收所有命令");
-        });
-
+        // 🎬 短剧模式没有勾：语音说「短剧」切换（像「豆包」一样），状态只在下面状态区里看
         // 🔴 录制动作：给一串点/划起个语音命令名，以后说一声就自动做
         findViewById(R.id.btnRecord).setOnClickListener(v -> showRecordDialog());
 
@@ -300,8 +265,9 @@ public class MainActivity extends Activity {
         TextView tip = new TextView(this);
         tip.setTextSize(13f);
         tip.setText("录制自己的动作：给一串“点 / 划”起一个语音命令名（比如：点赞）。\n"
-                + "录完之后，只要说这个名字，程序就自动把当时那串动作做一遍（可以多次点击）。\n"
-                + "注意：录制时屏幕会被一层透明浮层盖住，你的点击只是记位置，不会真的生效。");
+                + "录制时你的每个动作都会【真的执行】（点哪点哪、滑哪滑哪，包括上滑/左滑），\n"
+                + "同时被记下来；录完之后说这个名字，就自动重做这串动作（含间隔，每步再加 0.2 秒延时）。\n"
+                + "短剧模式里自己录的命令也能用。名字最好 2 个字以上。");
         col.addView(tip);
 
         TextView listTitle = new TextView(this);
@@ -409,8 +375,8 @@ public class MainActivity extends Activity {
                 + "悬浮窗权限：" + (canOverlay ? "已授予 ✓" : "未授予 ✗  请点 ②") + "\n"
                 + "摇一摇：" + (shakeOn ? "已开启 ✓" : "已关闭") + "\n"
                 + "短剧模式：" + (sp.getBoolean("shortDrama", false)
-                        ? "已开启（只听 下集/上集/广告/直播；听到「嗨小白」自动退出）"
-                        : "已关闭（收所有命令）") + "\n"
+                        ? "已开启（只听 下集/上集/广告/直播 和自己录的命令；说「短剧」退出）"
+                        : "已关闭（收所有命令；说「短剧」开启）") + "\n"
                 + "唤醒动作：什么都不做（不静音、不点屏幕）\n"
                 + "修改系统设置（亮/暗）：" + (Settings.System.canWrite(this)
                         ? "已允许 ✓" : "未允许 ✗  请点 ☀") + "\n"

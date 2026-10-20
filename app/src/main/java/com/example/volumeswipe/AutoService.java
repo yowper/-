@@ -102,6 +102,10 @@ public class AutoService extends AccessibilityService {
     private static final long SWIPE_GUARD_MS = 3000;
     /** 手势层面的硬锁：上滑/下滑两次之间至少隔 0.9 秒（不管是哪条路径叫的） */
     private static final long SWIPE_MIN_GAP_MS = 900;
+    /** 录制重放：相邻两个手势至少隔 0.3 秒（用户要求动作之间要有一定的延时） */
+    private static final long REPLAY_GAP_MS = 300;
+    /** 录制重放：在录制间隔的基础上额外多等 0.2 秒（页面动画需要时间） */
+    private static final long REPLAY_EXTRA_MS = 200;
 
     /** 暂停 / 恢复播放的点击点：X 50%、Y 20%（用户规定） */
     private static final int PAUSE_X = 50;
@@ -405,31 +409,34 @@ public class AutoService extends AccessibilityService {
         return getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("shortDrama", false);
     }
 
-    /** 开 / 关短剧模式（主界面那个勾；语音听到「嗨小白」会自动关掉） */
+    /** 开 / 关短剧模式（语音「短剧」切换：没开就进、开着就退） */
     public void setShortDrama(boolean on, String why) {
         boolean old = shortDramaOn();
         getSharedPreferences("cfg", MODE_PRIVATE).edit().putBoolean("shortDrama", on).apply();
         if (old != on) {
-            postStatus(on ? "短剧模式：已开启（只听 下集 / 上集 / 广告 / 直播）"
-                    : "短剧模式：已关闭（恢复正常接收所有命令）");
+            postStatus(on ? "短剧模式：已开启（只听 下集 / 上集 / 广告 / 直播 和自己录的命令）"
+                    : "短剧模式：已关闭（恢复接收所有命令）");
             KeepService.note((on ? "短剧模式已开启" : "短剧模式已关闭")
                     + (why == null || why.length() == 0 ? "" : "：" + why));
         }
     }
 
     /** 短剧模式允许的命令：下一集 / 上一集 / 广告 / 直播
-     *  （再加「小白再见」当安全阀，免得短剧模式里什么都关不掉） */
+     *  再加「短剧」（再说一次就退出短剧模式）和「小白再见」（安全阀）；
+     *  自己录的命令不在这里面 —— resolveCmd 里它优先放行（用户要求：录的就是拿来退广告的） */
     private static boolean isDramaCmd(int cmd) {
         return cmd == Commands.CMD_NEXT || cmd == Commands.CMD_PREV
                 || cmd == Commands.CMD_SKIP_AD || cmd == Commands.CMD_EXIT_LIVE
+                || cmd == Commands.CMD_DRAMA_TOGGLE
                 || cmd == Commands.CMD_EXIT;
     }
 
     /**
      * 统一的命令解析（所有语音路径都走这里，不要再直接用 Commands.match）：
-     * ① 短剧模式：听到唤醒词就退出短剧模式；其余只收 下集/上集/广告/直播，
+     * ① 录制模式：用户自己录的语音命令名（RecordedCmds）→ CMD_RECORDED
+     *    （用户要求：录的就是拿来退广告的，【短剧模式里也要能用】，所以最先判）
+     * ② 短剧模式：只收 下集/上集/广告/直播 + 「短剧」（退出用）+「小白再见」，
      *    其他命令一律不接收（不执行、不在屏幕下方显示）
-     * ② 录制模式：用户自己录的语音命令名（RecordedCmds）→ CMD_RECORDED
      * ③ 正常命令表
      *
      * verbose=true 时把“不接收”的原因写进日志；tick 里的判断用 false，免得刷屏。
@@ -439,39 +446,20 @@ public class AutoService extends AccessibilityService {
         if (t.length() == 0) {
             return Commands.CMD_NONE;
         }
-        // 短剧模式：用户要求“其他命令不再接收，直到收到嗨小白”
-        // → 听到唤醒词就退出短剧模式（恢复接收所有命令）
-        if (shortDramaOn() && Commands.containsWakeWord(t)) {
-            setShortDrama(false, "听到唤醒词「" + t + "」");
-            return Commands.match(t);
-        }
         int cmd = Commands.match(t);
         String rec = RecordedCmds.find(this, t);
+        if (rec != null && cmd != Commands.CMD_EXIT) {
+            // 安全阀：录制名字不许把「小白再见」抢走
+            return Commands.CMD_RECORDED;
+        }
         if (shortDramaOn()) {
             if (cmd != Commands.CMD_NONE && !isDramaCmd(cmd)) {
                 if (verbose) {
-                    KeepService.note("短剧模式：只听 下集/上集/广告/直播，「" + t + "」（"
-                            + Commands.nameOf(cmd) + "）不接收");
+                    KeepService.note("短剧模式：只听 下集/上集/广告/直播 和自己录的命令，「"
+                            + t + "」（" + Commands.nameOf(cmd) + "）不接收；说「短剧」可退出短剧模式");
                 }
                 return Commands.CMD_NONE;
             }
-            if (cmd == Commands.CMD_NONE && rec != null) {
-                if (verbose) {
-                    KeepService.note("短剧模式：自己录制的「" + rec
-                            + "」也不接收（短剧模式只收那四条）");
-                }
-                return Commands.CMD_NONE;
-            }
-            if (rec != null) {
-                // 名字恰好撞上 下集/广告 这种：短剧模式下也一律做命令，不放行录制动作
-                if (verbose) {
-                    KeepService.note("短剧模式：不放行自己录制的「" + rec + "」（短剧模式只收那四条）");
-                }
-                return cmd;
-            }
-        }
-        if (rec != null) {
-            return Commands.CMD_RECORDED;
         }
         return cmd;
     }
@@ -2978,12 +2966,17 @@ public class AutoService extends AccessibilityService {
     // ==================== 录制模式 ====================
     // 用户要求：录下自己的一串动作（移动位置、点击、多次重复的简单动作），
     // 绑到一个语音命令名上；以后一听到这个名字，就自动把这串动作做一遍。
+    // 用户要求：录制时的动作要【真的执行】（点哪点哪、滑哪滑哪，包括上滑/左滑），
+    // 做法 = 浮层接住触摸 → 记下来 → 立刻用无障碍手势原样转发给系统（边录边执行）。
 
     private FrameLayout recLayer;
     private TextView recHud;
     private String recName = "";
     private final java.util.List<int[]> recSteps = new java.util.ArrayList<>();
     private long recLastAt = 0;
+    // 转发队列：一个手势做完（onCompleted）才发下一个，免得互相取消
+    private final java.util.ArrayDeque<GestureDescription> recQueue = new java.util.ArrayDeque<>();
+    private boolean recPumping = false;
 
     /** 开始录制（主界面点了「🔴 录制动作」后调这里） */
     public void startRecordingCmd(final String name) {
@@ -3008,8 +3001,8 @@ public class AutoService extends AccessibilityService {
         final int sh = s[1];
 
         FrameLayout fl = new FrameLayout(this);
-        // 只要很淡的一层：看得见下面的界面，但点击/划动会被我们接住记下来
-        fl.setBackgroundColor(0x22000000);
+        // 完全透明：不影响你看下面的界面（动作由我们接住后原样转发，真的生效）
+        fl.setBackgroundColor(0x00000000);
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
@@ -3099,11 +3092,16 @@ public class AutoService extends AccessibilityService {
                             long dur = now - downAt;
                             int delay = (int) Math.max(0,
                                     Math.min(4000, downAt - recLastAt));
-                            int x1 = pct(dx, sw);
-                            int y1 = pct(dy, sh);
-                            int x2 = pct(e.getRawX(), sw);
-                            int y2 = pct(e.getRawY(), sh);
-                            if (moved && dur > 120) {
+                            float fx1 = dx;
+                            float fy1 = dy;
+                            float fx2 = e.getRawX();
+                            float fy2 = e.getRawY();
+                            int x1 = pct(fx1, sw);
+                            int y1 = pct(fy1, sh);
+                            int x2 = pct(fx2, sw);
+                            int y2 = pct(fy2, sh);
+                            boolean isSwipe = moved && dur > 120;
+                            if (isSwipe) {
                                 recSteps.add(new int[]{RecordedCmds.TYPE_SWIPE,
                                         x1, y1, x2, y2,
                                         (int) Math.max(60, Math.min(3000, dur)), delay});
@@ -3112,6 +3110,9 @@ public class AutoService extends AccessibilityService {
                                         x2, y2, 0, 0, 0, delay});
                             }
                             recLastAt = now;
+                            // 用户要求：录制时也要真的点/真的滑
+                            // → 原样转发给系统（浮层把真触摸接住了，得补一个一样的手势下去）
+                            forwardNow(fx1, fy1, fx2, fy2, dur, isSwipe);
                             refreshRecHud();
                             return true;
                         }
@@ -3142,8 +3143,70 @@ public class AutoService extends AccessibilityService {
             return;
         }
         KeepService.note("开始录制语音命令「" + n
-                + "」：切到你要操作的界面做动作，做完点上方「完成」（录制时的点击只是记位置，不会真生效）");
-        toast("开始录制「" + n + "」：去做你的动作，完事点屏幕上方「完成」");
+                + "」：你现在做的每个动作都会真的执行（边录边转发），做完点上方「完成」");
+        toast("开始录制「" + n + "」：动作会真的执行并记下来，完事点屏幕上方「完成」");
+    }
+
+    /** 把刚录到的动作原样转发给系统（真的点/真的滑） */
+    private void forwardNow(float x1, float y1, float x2, float y2,
+                            long durMs, boolean isSwipe) {
+        long d;
+        if (isSwipe) {
+            d = Math.max(60, Math.min(3000, durMs));
+        } else {
+            d = Math.max(60, Math.min(600, durMs));
+        }
+        Path p = new Path();
+        p.moveTo(x1, y1);
+        // 点击时起止点重合：零长度路径会被系统拒，挪 0.5px
+        if (Math.abs(x2 - x1) < 1 && Math.abs(y2 - y1) < 1) {
+            p.lineTo(x2 + 0.5f, y2);
+        } else {
+            p.lineTo(x2, y2);
+        }
+        GestureDescription.Builder b = new GestureDescription.Builder();
+        b.addStroke(new GestureDescription.StrokeDescription(p, 0, d));
+        recQueue.add(b.build());
+        pumpRecQueue();
+    }
+
+    /** 一个转发完再发下一个（dispatchGesture 同时发两段会互相取消） */
+    private void pumpRecQueue() {
+        if (recPumping) {
+            return;
+        }
+        final GestureDescription g = recQueue.poll();
+        if (g == null) {
+            return;
+        }
+        recPumping = true;
+        boolean sent = false;
+        try {
+            sent = dispatchGesture(g, new GestureResultCallback() {
+                @Override
+                public void onCompleted(GestureDescription gestureDescription) {
+                    recPumping = false;
+                    pumpRecQueue();
+                }
+
+                @Override
+                public void onCancelled(GestureDescription gestureDescription) {
+                    recPumping = false;
+                    pumpRecQueue();
+                }
+            }, handler);
+        } catch (Throwable t) {
+            sent = false;
+        }
+        if (!sent) {
+            recPumping = false;
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    pumpRecQueue();
+                }
+            }, 60);
+        }
     }
 
     /** 屏幕坐标 → 百分比 */
@@ -3170,9 +3233,9 @@ public class AutoService extends AccessibilityService {
         }
         recHud.setText("🔴 录制「" + recName + "」：已记 " + recSteps.size() + " 步（点 " + tap
                 + (swp > 0 ? " / 划 " + swp : "") + "）\n"
-                + "回到你要操作的界面，做动作（点 / 划）。\n"
-                + "注意：录制时的点击只是记位置，不会真生效；\n"
-                + "录完用语音说「" + recName + "」才会真的做这些动作。");
+                + "你现在做的每个动作都会【真的执行】（点哪点哪、滑哪滑哪），\n"
+                + "同时被记下来。点错就「撤销上一步」，做完点「完成」。\n"
+                + "录完用语音说「" + recName + "」就会自动重做这串动作。");
     }
 
     /** 录完了：存起来 + 把名字加进识别词表 */
@@ -3195,7 +3258,7 @@ public class AutoService extends AccessibilityService {
         String desc = RecordedCmds.describe(this, n);
         postStatus("录制完成：「" + n + "」" + desc);
         KeepService.note("录制完成：语音命令「" + n + "」= " + desc
-                + "——以后说「" + n + "」就自动重放这串动作");
+                + "（刚才的动作已边录边真执行过了；以后说「" + n + "」就自动重做）");
         toast("录好了：「" + n + "」= " + desc + "。以后说这个名字就自动做");
         refreshVocabNow();
     }
@@ -3209,6 +3272,7 @@ public class AutoService extends AccessibilityService {
         }
         recLayer = null;
         recHud = null;
+        recQueue.clear();
     }
 
     /** 名字 → 动作（给主界面列表用） */
@@ -3243,20 +3307,25 @@ public class AutoService extends AccessibilityService {
             return;
         }
         final int[] st = steps.get(idx);
-        // 每步至少隔 150ms：手势是一个接一个发的，
-        // 挨太近会被系统丢掉（上一段手势还没走完）
-        long wait = Math.max(150, st[6]);
+        long used;
+        if (st[0] == RecordedCmds.TYPE_TAP) {
+            tapAt(st[1], st[2]);
+            used = 120; // 点击手势本身的时长（和 tapms 默认一致）
+        } else {
+            swipeByPct(st[1], st[2], st[3], st[4], st[5]);
+            used = Math.max(60, Math.min(3000, st[5]));
+        }
+        // 用户要求：动作之间要有一定的延时。
+        // 下一步的开销 = 这一步手势本身的时长 + 下一步录制的间隔 + 额外 200ms，
+        // 且相邻两个手势至少隔 300ms（挨太近会被系统丢掉）
+        long nextDelay = idx + 1 < steps.size() ? steps.get(idx + 1)[6] : 0;
+        long gap = used + Math.max(REPLAY_GAP_MS, nextDelay + REPLAY_EXTRA_MS);
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (st[0] == RecordedCmds.TYPE_TAP) {
-                    tapAt(st[1], st[2]);
-                } else {
-                    swipeByPct(st[1], st[2], st[3], st[4], st[5]);
-                }
                 replayStep(steps, idx + 1, name);
             }
-        }, wait);
+        }, gap);
     }
 
     /**
@@ -3521,6 +3590,12 @@ public class AutoService extends AccessibilityService {
                 // 录制模式：听到自己录的那个名字 → 自动把当时录的动作重放一遍
                 replayRecorded(text);
                 break;
+            case Commands.CMD_DRAMA_TOGGLE: {
+                // 用户要求：「短剧」= 像豆包一样说一声就切换（没开就进、开着就退）
+                boolean dramaWas = shortDramaOn();
+                setShortDrama(!dramaWas, "语音「短剧」");
+                break;
+            }
             case Commands.CMD_EXIT:
                 shutdownAll();
                 break;
