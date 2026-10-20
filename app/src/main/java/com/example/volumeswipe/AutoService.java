@@ -189,9 +189,10 @@ public class AutoService extends AccessibilityService {
             }
             int cmd = Commands.match(t);
             if (cmd != Commands.CMD_NONE) {
-                executeCommand(cmd, t);
-                toastResult(cmd, "执行：" + t);
-                KeepService.note("已执行：" + t);
+                if (executeCommand(cmd, t)) {
+                    toastResult(cmd, "执行：" + t);
+                    KeepService.note("已执行：" + t);
+                }
                 backToIdle();
             }
         }
@@ -241,6 +242,28 @@ public class AutoService extends AccessibilityService {
     // ==================== 本地引擎回调 ====================
 
     /**
+     * 用户要求：日志里要记录【听到了什么声音】，不只是记录执行了什么。
+     * 本地引擎每识别出一句话就调这里（不管是不是命令、也不管有没有执行）。
+     * 只写日志：不在命令表里的话不执行，也不在屏幕下方显示。
+     */
+    public void onHeardPhrase(String heard) {
+        String t = Commands.normalize(heard);
+        if (t.length() == 0) {
+            return;
+        }
+        if (Commands.containsWakeWord(t)) {
+            KeepService.note("听到：「" + t + "」（含唤醒词，不当命令）");
+            return;
+        }
+        int cmd = Commands.match(t);
+        if (cmd == Commands.CMD_NONE) {
+            KeepService.note("听到：「" + t + "」→ 不在命令表里（不执行、不提示）");
+            return;
+        }
+        KeepService.note("听到：「" + t + "」→ 命令：" + Commands.nameOf(cmd));
+    }
+
+    /**
      * KeepService 的本地识别引擎每命中一个词表词就调这里（主线程）。
      * 待命阶段命中的是唤醒词；已唤醒阶段命中的是命令词。
      */
@@ -257,9 +280,10 @@ public class AutoService extends AccessibilityService {
                 int quick = Commands.match(t);
                 if (quick != Commands.CMD_NONE) {
                     if (t.length() <= 8) {
-                        executeCommand(quick, t);
-                        toastResult(quick, "执行：" + t);
-                        KeepService.note("已执行（未唤醒）：" + t);
+                        if (executeCommand(quick, t)) {
+                            toastResult(quick, "执行：" + t);
+                            KeepService.note("已执行（未唤醒）：" + t);
+                        }
                         return;
                     }
                     KeepService.note("听到了「" + t + "」，但太长（>8 字），不当作命令");
@@ -300,12 +324,14 @@ public class AutoService extends AccessibilityService {
                 if (cmd != Commands.CMD_NONE) {
                     lastLocalCmd = cmd;
                     lastLocalCmdAt = now;
-                    executeCommand(cmd, cmdText);
-                    toastResult(cmd, "执行：" + cmdText);
-                    KeepService.note("已执行：" + cmdText);
+                    if (executeCommand(cmd, cmdText)) {
+                        toastResult(cmd, "执行：" + cmdText);
+                        KeepService.note("已执行：" + cmdText);
+                    }
                 } else {
-                    KeepService.note("听到了「" + cmdText + "」，但不是能执行的命令");
-                    toast("没匹配到命令：" + cmdText);
+                    // 用户要求：不在规定的命令表里 → 不执行、也不在屏幕下方显示
+                    // （只写进日志，方便你自己排查它到底听成了什么）
+                    KeepService.note("听到了「" + cmdText + "」，不在命令表里 → 不执行、不提示");
                 }
             }
             return;
@@ -330,11 +356,13 @@ public class AutoService extends AccessibilityService {
                 // 不用豆包：直接执行，不进编辑框
                 int cmd = Commands.match(cmdText);
                 if (cmd != Commands.CMD_NONE) {
-                    executeCommand(cmd, cmdText);
-                    toastResult(cmd, "执行：" + cmdText);
+                    if (executeCommand(cmd, cmdText)) {
+                        toastResult(cmd, "执行：" + cmdText);
+                    }
                     backToIdle();
                 } else {
-                    toast("没匹配到命令：" + cmdText);
+                    // 不在命令表里 → 不执行、不提示（只记日志）
+                    KeepService.note("听到了「" + cmdText + "」，不在命令表里 → 不执行、不提示");
                 }
             }
         }
@@ -646,14 +674,17 @@ public class AutoService extends AccessibilityService {
 
         // 收尾：框里的内容就是命令 → 执行
         if (t.length() > 0) {
+            // 用户要求：日志也要记录【听到了什么】，不只是执行了什么
+            KeepService.note("豆包输入框里的字：「" + t + "」");
             int cmd = Commands.match(t);
             if (cmd != Commands.CMD_NONE) {
-                executeCommand(cmd, t);
-                toastResult(cmd, "执行：" + t);
-                KeepService.note("已执行：" + t);
+                if (executeCommand(cmd, t)) {
+                    toastResult(cmd, "执行：" + t);
+                    KeepService.note("已执行：" + t);
+                }
             } else {
-                toast("没匹配到命令：" + t);
-                KeepService.note("没匹配到命令：" + t);
+                // 用户要求：不在规定的命令表里 → 不执行、也不在屏幕下方显示（只记日志）
+                KeepService.note("没匹配到命令（不在命令表里，不执行）：「" + t + "」");
             }
         } else {
             KeepService.note("豆包没听清，回到待命");
@@ -1354,14 +1385,11 @@ public class AutoService extends AccessibilityService {
         skipWatching = true;
         swipeChainActive = false;
         swipesDone = 0;
-        // 用户要求：先点一下 (50%,20%) —— 就是暂停播放，再开始读秒。
-        // （已经在暂停状态就不点：再点一下反而会把它放起来）
-        if (isAudioPlaying()) {
-            tapAt(PAUSE_X, PAUSE_Y);
-            postStatus(tag + "：先点 (50%,20%) 暂停播放，然后读读秒");
-        } else {
-            postStatus(tag + "：当前已是暂停状态，不点 (50%,20%)，直接读读秒");
-        }
+        skipTapDone = false;
+        // 用户要求的顺序：先截图 → 再点 (50%,20%) 暂停播放 → 识别读秒。
+        // （截完图才点：截图不能被暂停图标/暂停瞬间的画面影响。）
+        // 点暂停在 pixelLoop 里第一张截图拍完之后做（见 skipTapDone）。
+        postStatus(tag + "：先截图，再点 (50%,20%) 暂停播放，然后读读秒");
         postStatus(tag + "：截屏读读秒（屏幕下方 20%）");
         // Android 11+ 一律先走截屏 + OCR：只有它能真的读到
         // 「10 秒后可继续看下一集」里的秒数。
@@ -1610,6 +1638,17 @@ public class AutoService extends AccessibilityService {
                         bmp.recycle();
                     }
 
+                    // 用户要求的顺序：第一张截图拍完 → 再点 (50%,20%) 暂停播放
+                    if (!skipTapDone) {
+                        skipTapDone = true;
+                        if (isAudioPlaying()) {
+                            tapAt(PAUSE_X, PAUSE_Y);
+                            postStatus(pwTag + "：截图已拍完，点 (50%,20%) 暂停播放");
+                        } else {
+                            postStatus(pwTag + "：截图已拍完；当前已是暂停状态，不点 (50%,20%)");
+                        }
+                    }
+
                     // ① 像素判据：先看到过变化、又连续 2 次没变 = 读秒结束
                     int diff = sigMeanDiff(lastStripSig, sig);
                     lastStripSig = sig;
@@ -1620,7 +1659,7 @@ public class AutoService extends AccessibilityService {
                         pwSame++;
                     }
                     if (pwSawChange && pwSame >= 2) {
-                        finishPixelWatch("下方画面连续不动了");
+                        confirmNoSecondsThenSwipe("下方画面连续不动了");
                         return;
                     }
 
@@ -1671,13 +1710,12 @@ public class AutoService extends AccessibilityService {
                                 }
                             } else {
                                 pwOcrMiss++;
-                                // 用户要求：读不到秒数就直接上拉。
-                                // （万一真是看走了眼提前滑了也没关系：
-                                //   上滑后 1 秒还会截图核对，还在广告里就再拉）
+                                // 用户要求：读不到秒数不能直接滑，要【再截一张图】确认真的没秒
+                                // 才上拉（跳秒结束也一样）。
                                 if (!pwSawCountdown) {
                                     done = true;
                                     strip.recycle();
-                                    finishPixelWatch("下方没有读秒文字（无秒），直接上滑");
+                                    confirmNoSecondsThenSwipe("下方读不到读秒（无秒）");
                                 }
                             }
                             if (!done) {
@@ -1686,9 +1724,9 @@ public class AutoService extends AccessibilityService {
                             if (done) {
                                 return;
                             }
-                            // 之前读到过读秒、现在没了 = 跳秒结束了 → 直接上拉
+                            // 之前读到过读秒、现在没了 = 跳秒结束了 → 再截图确认
                             if (pwSawCountdown && pwOcrMiss >= 1) {
-                                finishPixelWatch("读秒已经消失（跳秒结束）");
+                                confirmNoSecondsThenSwipe("读秒突然消失（跳秒结束）");
                                 return;
                             }
                             if (pwEndAt > 0 && now >= pwEndAt) {
@@ -1716,16 +1754,81 @@ public class AutoService extends AccessibilityService {
         swipeAndVerify(pwTag, pwLeft, snap);
     }
 
-    /** 读秒到时（不用等下一轮采样，时刻更准）：到时直接上滑 */
+    /** 读秒到时（不用等下一轮采样，时刻更准）：
+     *  用户要求：延时结束后也不能盲滑 —— 要再截一张图确认没秒了才上拉 */
     private final Runnable pwDeadlineTask = new Runnable() {
         @Override
         public void run() {
             if (!skipWatching) {
                 return;
             }
-            finishPixelWatch("按读到的 " + pwSeenSec + " 秒（实际等 " + pwWaitSec + " 秒）等到了");
+            confirmNoSecondsThenSwipe("按读到的 " + pwSeenSec + " 秒（实际等 " + pwWaitSec + " 秒）延时结束");
         }
     };
+
+    /** 第一张截图是否已拍完（拍完才点 (50%,20%) 暂停） */
+    private boolean skipTapDone = false;
+
+    /**
+     * 用户要求：上拉之前【再截一张图确认下方已经没有读秒了】。
+     * - 还能读到秒（≥ 2 秒）→ 说明读秒没走完（或又跳回来）→ 继续等
+     * - 读到 1 秒或读不到 → 确认没秒了 → 上滑
+     * 跳秒结束、无秒、延时结束、画面不动，都走这里。
+     */
+    private void confirmNoSecondsThenSwipe(final String why) {
+        if (!skipWatching) {
+            return;
+        }
+        handler.removeCallbacks(pixelLoop);
+        postStatus(pwTag + "：" + why + " → 再截一张图确认没有读秒");
+        captureScreenThumb(new BitmapCallback() {
+            @Override
+            public void onBitmap(Bitmap bmp, String error) {
+                if (!skipWatching) {
+                    if (bmp != null) {
+                        bmp.recycle();
+                    }
+                    return;
+                }
+                final Bitmap strip = bmp == null ? null : cropBottom(bmp, REGION_TOP_FRAC);
+                if (bmp != null) {
+                    bmp.recycle();
+                }
+                if (strip == null) {
+                    postStatus(pwTag + "：截图没拿到，按上次判断上滑");
+                    finishPixelWatch(why);
+                    return;
+                }
+                Ocr.run(strip, new Ocr.Cb() {
+                    @Override
+                    public void onText(String text) {
+                        if (!skipWatching) {
+                            strip.recycle();
+                            return;
+                        }
+                        int sec = readSeconds(Commands.normalize(text));
+                        strip.recycle();
+                        if (sec >= 2) {
+                            // 还有秒：读秒没走完 → 再等
+                            int wait = sec - 1;
+                            pwSawCountdown = true;
+                            pwSeenSec = sec;
+                            pwWaitSec = wait;
+                            pwOcrMiss = 0;
+                            postStatus(pwTag + "：再截图还是读到 " + sec + " 秒 → 再等 "
+                                    + wait + " 秒");
+                            pwEndAt = System.currentTimeMillis() + (long) wait * 1000;
+                            handler.removeCallbacks(pwDeadlineTask);
+                            handler.postDelayed(pwDeadlineTask, (long) wait * 1000);
+                            handler.postDelayed(pixelLoop, (long) wait * 1000 + 300);
+                            return;
+                        }
+                        finishPixelWatch("再截图确认没有读秒了");
+                    }
+                });
+            }
+        });
+    }
 
     private int pwWaitSec = -1;
     private int pwSeenSecShown = -1;
@@ -2846,9 +2949,14 @@ public class AutoService extends AccessibilityService {
 
     // ==================== 命令执行 ====================
 
-    public void executeCommand(int cmd, String text) {
+    /**
+     * 执行命令。返回值 = 真的动手了？
+     * 被防误听/单字闸拦下时返回 false —— 调用方就不要弹“执行：…”的提示了
+     * （用户要求：没真执行就不在屏幕下方显示）。
+     */
+    public boolean executeCommand(int cmd, String text) {
         if (cmd == Commands.CMD_NONE) {
-            return;
+            return false;
         }
         // ================= 防误听“双保险”（所有路径都走这里） =================
         // 1) 同一条命令 1.5 秒内只执行一次（本地引擎会把同一句话反复报好几遍）
@@ -2859,14 +2967,14 @@ public class AutoService extends AccessibilityService {
         if (cmd == lastExecCmd && nowMs - lastExecAt < REPEAT_GUARD_MS) {
             KeepService.note("刚执行过「" + lastExecText + "」，又听到同一条「" + text
                     + "」（" + (nowMs - lastExecAt) + "ms 内），忽略重复");
-            return;
+            return false;
         }
         if (isOppositePair(lastExecCmd, cmd) && nowMs - lastExecAt < OPPOSITE_GUARD_MS) {
             KeepService.note("刚执行过「" + lastExecText + "」，又听到反过来的「" + text
                     + "」，按防误听忽略（" + (OPPOSITE_GUARD_MS / 1000) + " 秒内不反向）");
-            return;
+            return false;
         }
-        // 用户要求：一个字就说完的命令（停 / 放 / 大 / 小 / 亮 / 暗）
+        // 用户要求：一个字就说完的命令（停 / 大 / 小 / 亮 / 暗）
         // 只有在【真的有视频/声音在播】时才执行；
         // 安静环境下本地引擎的幻觉、或视频根本没在放时的偶然一声，
         // 都不该真地动屏幕/调音量。
@@ -2874,20 +2982,22 @@ public class AutoService extends AccessibilityService {
         if (nt.length() == 1 && !isAudioPlaying()) {
             KeepService.note("听到了「" + text + "」，但没执行：现在没有视频/声音在播"
                     + "（单字命令只在播放时才动）");
-            return;
+            return false;
         }
         lastExecCmd = cmd;
         lastExecAt = nowMs;
         lastExecText = text;
         // 屏幕下方也提示一句（用户要求：听到命令要能看到，
-        // 像广告/直播这种以前什么提示都没有）
-        showStatusStrip("听到「" + text + "」");
+        // 像广告/直播这种以前什么提示都没有）。
+        // 用户要求：屏幕上只显示【规定的命令】——这里写的名字就是命令表里的那条。
+        String cname = Commands.nameOf(cmd);
+        showStatusStrip("听到「" + text + "」→ " + (cname.length() == 0 ? "命令" : cname));
         // 用户要求：不管什么命令，第一个动作都是「再点一下 (50%,20%) 让暂停结束」，
         // 然后才执行命令本身。（继续播放自己就是那一下，不再重复。）
         // pausedByUs=true 说明是喊「嗨小白」时我们暂停的，那一下才需要解除。
         if (cmd == Commands.CMD_RESUME) {
             executeCommandInner(cmd, text);
-            return;
+            return true;
         }
         final int c2 = cmd;
         final String t2 = text;
@@ -2897,6 +3007,7 @@ public class AutoService extends AccessibilityService {
                 executeCommandInner(c2, t2);
             }
         });
+        return true;
     }
 
     private void executeCommandInner(int cmd, String text) {

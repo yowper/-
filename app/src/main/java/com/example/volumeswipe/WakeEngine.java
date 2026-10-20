@@ -33,6 +33,9 @@ public class WakeEngine {
 
         void onWake(String text);
 
+        /** 每次识别出来的话（不只是在词表里的）：只用来记日志——“听到了什么声音” */
+        void onHeard(String text);
+
         void onLevel(int level);
 
         void onError(String msg);
@@ -379,9 +382,15 @@ public class WakeEngine {
             return;
         }
         String t = Commands.normalize(text);
+        if (t.length() == 0) {
+            return;
+        }
         if (System.currentTimeMillis() - swapAt < 300) {
             return; // 刚换完词表，残句不可信
         }
+        // 用户要求：日志里要记录【听到了什么声音】，不只是记录执行了什么。
+        // 这里把每次识别出来的原话上报（不分是不是命令），由上层记一笔。
+        postHeard(t);
         String[] v = vocab == null ? DEFAULT_VOCAB : vocab;
         for (String w : v) {
             if (t.contains(w)) {
@@ -400,6 +409,26 @@ public class WakeEngine {
                 return;
             }
         }
+    }
+
+    /** 最近一次上报过的“听到的话”，用来去重（同一句话会被反复识别出来） */
+    private volatile String lastHeardText = "";
+    private volatile long lastHeardAt = 0;
+
+    /** 上报“听到的原话”（节流 + 去重，不然一个词会被报好几遍） */
+    private void postHeard(final String t) {
+        long now = System.currentTimeMillis();
+        if (t.equals(lastHeardText) && now - lastHeardAt < 2000) {
+            return;
+        }
+        lastHeardText = t;
+        lastHeardAt = now;
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                listener.onHeard(t);
+            }
+        });
     }
 
     private String extractText(String json) {

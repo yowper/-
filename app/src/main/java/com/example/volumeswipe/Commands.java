@@ -39,13 +39,14 @@ public final class Commands {
     private static final String[] KW_VOL_DOWN = {
             "声音小", "音量小", "小点声", "小声点", "调小", "小一点", "小点"
     };
-    /** 亮：屏幕亮度 +（需要「修改系统设置」权限） */
+    /** 亮：屏幕亮度 +（需要「修改系统设置」权限）
+     *  注意：单字「亮」不在这个表里 —— 单字只认【整句就这一个字】（见 matchOne） */
     private static final String[] KW_BRIGHT_UP = {
-            "亮一点", "亮点", "亮些", "调亮", "屏幕亮", "变亮", "亮起来", "亮"
+            "亮一点", "亮点", "亮些", "调亮", "屏幕亮", "变亮", "亮起来"
     };
     /** 暗：屏幕亮度 - */
     private static final String[] KW_BRIGHT_DOWN = {
-            "暗一点", "暗点", "暗些", "调暗", "屏幕暗", "变暗", "暗下来", "暗"
+            "暗一点", "暗点", "暗些", "调暗", "屏幕暗", "变暗", "暗下来"
     };
     private static final String[] KW_EXIT_LIVE = {
             // 用户要求简单化：只说「直播」也算退出直播
@@ -76,7 +77,7 @@ public final class Commands {
      *  （用户要求把单字「放」去掉：太容易在视频台词里被触发（“放假/放下”等），
      *    “放着/放一下/继续放/接着放”这些多字的保留） */
     private static final String[] KW_TOGGLE_PLAY = {
-            "暂停", "停下", "停一下", "停", "放着", "放一下",
+            "暂停", "停下", "停一下", "放着", "放一下",
             "恢复播放", "继续播放", "播放", "继续看", "接着看", "接着播", "继续播",
             "开始播放", "接着放", "继续", "继续放"
     };
@@ -211,31 +212,33 @@ public final class Commands {
         if (hit(t, KW_NEXT)) {
             return CMD_NEXT;
         }
-        // 兜底：识别成“下几集”“下一鸡”这种，只要含“下”且长度短，也当下一集
-        if (t.length() <= 4 && t.contains("下")
+        // 兜底（限定到 ≤ 3 字，只认「下/上 + 集/级/季/期」这种识别抖动）：
+        // 例如「下几集」「下一几」→ 下一集。其它一律不算命令。
+        if (t.length() <= 3 && t.contains("下")
                 && (t.contains("集") || t.contains("级") || t.contains("季") || t.contains("期"))) {
             return CMD_NEXT;
         }
-        if (t.length() <= 4 && t.contains("上")
+        if (t.length() <= 3 && t.contains("上")
                 && (t.contains("集") || t.contains("级") || t.contains("季") || t.contains("期"))) {
             return CMD_PREV;
         }
-        // 亮度：先说「亮/暗」（防被“大/小”抢走）；单字「亮」「暗」也认
-        if (hit(t, KW_BRIGHT_UP) || (t.length() <= 4 && t.contains("亮"))) {
+        // 亮度：用户规定就是这两个单字（「亮」「暗」）加上表里的说法；
+        // 单字只认【整句就是这一个字】，表里也不用「≤ 4 字里含亮/暗」这种宽松兑底。
+        if (hit(t, KW_BRIGHT_UP) || matchOne(t) == CMD_BRIGHT_UP) {
             return CMD_BRIGHT_UP;
         }
-        if (hit(t, KW_BRIGHT_DOWN) || (t.length() <= 4 && t.contains("暗"))) {
+        if (hit(t, KW_BRIGHT_DOWN) || matchOne(t) == CMD_BRIGHT_DOWN) {
             return CMD_BRIGHT_DOWN;
         }
-        // 音量：长说法直接命中；用户要求「大」「小」这两个单字也行（限短句）
-        if (hit(t, KW_VOL_UP) || (t.length() <= 4 && t.contains("大"))) {
+        // 音量：用户规定就是「大」「小」这两个单字，加上表里的说法
+        if (hit(t, KW_VOL_UP) || matchOne(t) == CMD_VOL_UP) {
             return CMD_VOL_UP;
         }
-        if (hit(t, KW_VOL_DOWN) || (t.length() <= 4 && t.contains("小"))) {
+        if (hit(t, KW_VOL_DOWN) || matchOne(t) == CMD_VOL_DOWN) {
             return CMD_VOL_DOWN;
         }
-        // 停 / 放 / 继续 / 播放 / 继续播放：用户要求合成【同一条命令】= (50%,20%) 点一下
-        if (hit(t, KW_TOGGLE_PLAY)) {
+        // 停 / 继续 / 播放 / 继续播放：用户要求合成【同一条命令】= (50%,20%) 点一下
+        if (hit(t, KW_TOGGLE_PLAY) || matchOne(t) == CMD_TOGGLE_PLAY) {
             return CMD_TOGGLE_PLAY;
         }
         // 用户要求：直接喊 App 名字就打开（「红果」=打开红果，「抖音」=打开抖音）
@@ -252,11 +255,94 @@ public final class Commands {
 
     private static boolean hit(String text, String[] keys) {
         for (String k : keys) {
+            // 单字不许用 contains 匹配：视频台词里带这个字就误触发
+            // （例如“停下来看看”里的“停”）。单字只走 matchOne。
+            if (k == null || k.length() <= 1) {
+                continue;
+            }
             if (text.contains(k)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * 单字命令：只有【整句就是这个字】才算命令。
+     * 用户规定：大 = 声音大一点、小 = 声音小一点、亮/暗 = 亮度、停 = 暂停/继续。
+     */
+    private static int matchOne(String t) {
+        if (t == null || t.length() != 1) {
+            return CMD_NONE;
+        }
+        switch (t.charAt(0)) {
+            case '\u5927':   // 大
+                return CMD_VOL_UP;
+            case '\u5c0f':   // 小
+                return CMD_VOL_DOWN;
+            case '\u4eae':   // 亮
+                return CMD_BRIGHT_UP;
+            case '\u6697':   // 暗
+                return CMD_BRIGHT_DOWN;
+            case '\u505c':   // 停
+                return CMD_TOGGLE_PLAY;
+            default:
+                return CMD_NONE;
+        }
+    }
+
+    /**
+     * 命令的正式名称（就是用户规定的那份命令表里的名字）。
+     * 屏幕下方的提示 / 日志都用它：一眼能看出这句话对上了哪条规定的命令。
+     */
+    public static String nameOf(int cmd) {
+        switch (cmd) {
+            case CMD_SKIP_AD:
+                return "退出广告";
+            case CMD_NEXT:
+                return "下一集（上滑）";
+            case CMD_PREV:
+                return "上一集（下滑）";
+            case CMD_PAGE_DOWN:
+                return "下一页";
+            case CMD_PAGE_UP:
+                return "上一页";
+            case CMD_RESUME:
+            case CMD_TOGGLE_PLAY:
+                return "停 / 继续播放（点 50%,20%）";
+            case CMD_OPEN:
+                return "打开 App";
+            case CMD_EXIT:
+                return "关闭小助手";
+            case CMD_VOL_UP:
+                return "声音大一点";
+            case CMD_VOL_DOWN:
+                return "声音小一点";
+            case CMD_EXIT_LIVE:
+                return "退出直播";
+            case CMD_DOUBAO_ON:
+                return "打开豆包（勾上）";
+            case CMD_DOUBAO_OFF:
+                return "关闭豆包（去勾）";
+            case CMD_DOUBAO_TOGGLE:
+                return "切换豆包";
+            case CMD_TEST_SECONDS:
+                return "测试读秒";
+            case CMD_BRIGHT_UP:
+                return "屏幕亮一点";
+            case CMD_BRIGHT_DOWN:
+                return "屏幕暗一点";
+            default:
+                return "";
+        }
+    }
+
+    /**
+     * 是不是【规定的命令表】里的命令。
+     * 用户要求：不在表里的一律不执行，也不在屏幕下方显示。
+     */
+    public static boolean isCommand(String text) {
+        return match(text) != CMD_NONE;
     }
 
     /** 这句话里有没有唤醒词（唤醒词不允许和命令组合） */

@@ -355,6 +355,22 @@ public class KeepService extends Service {
                 }
             }
 
+            /**
+             * 用户要求：日志要记录【听到了什么声音】，不只是记录执行了什么。
+             * 这里只负责转发；日志由 AutoService.onHeardPhrase 写
+             * （它会把“在不在命令表里”一并写清楚）。
+             */
+            @Override
+            public void onHeard(String text) {
+                lastHeard = text;
+                AutoService svc = AutoService.get();
+                if (svc != null) {
+                    svc.onHeardPhrase(text);
+                } else {
+                    note("听到：「" + text + "」");
+                }
+            }
+
             @Override
             public void onLevel(int level) {
                 voiceLevel = level;
