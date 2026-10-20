@@ -27,6 +27,7 @@ public final class Commands {
     public static final int CMD_BRIGHT_UP = 16;    // 亮：屏幕亮一点
     public static final int CMD_BRIGHT_DOWN = 17;  // 暗：屏幕暗一点
     public static final int CMD_DOUBAO_TOGGLE = 18; // 「豆包」：勾着就关、没勾就开
+    public static final int CMD_RECORDED = 19;      // 自己录制的命令（名字→一串点/划动作）
 
     private static final String[] KW_EXIT = {
             "小白再见", "再见小白", "小白拜拜"
@@ -332,6 +333,8 @@ public final class Commands {
                 return "屏幕亮一点";
             case CMD_BRIGHT_DOWN:
                 return "屏幕暗一点";
+            case CMD_RECORDED:
+                return "自己录制的动作";
             default:
                 return "";
         }

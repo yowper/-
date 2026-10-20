@@ -216,6 +216,11 @@ public class WakeEngine {
         for (String b : Apps.BARE_NAMES) {
             set.add(b);
         }
+        // 用户自己录制的语音命令（录制模式）：名字必须提前进词表，
+        // 不然 Vosk 听不懂这个自定义名字
+        for (String r : RecordedCmds.names()) {
+            set.add(r);
+        }
         return set.toArray(new String[0]);
     }
 
@@ -227,6 +232,10 @@ public class WakeEngine {
         }
         for (String w : WAKES) {
             set.add(w);
+        }
+        // 自己录制的语音命令（录制模式）
+        for (String r : RecordedCmds.names()) {
+            set.add(r);
         }
         return set.toArray(new String[0]);
     }

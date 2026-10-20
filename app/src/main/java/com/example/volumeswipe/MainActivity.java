@@ -13,8 +13,10 @@ import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.View;
+import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -22,18 +24,37 @@ public class MainActivity extends Activity {
 
     private TextView tvStatus;
     private CheckBox cbDoubao;
+    private CheckBox cbDrama;
     private SharedPreferences sp;
     private boolean syncingDoubao = false;
+    private boolean syncingDrama = false;
     private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
 
-    /** 语音说了「打开豆包 / 关闭豆包」之后，设置里那个勾也要跟着变 */
+    /** 语音说了「打开豆包 / 关闭豆包」之后，设置里那个勾也要跟着变；
+     *  短剧模式听到「嗨小白」会自动退出，勾也要跟着变 */
     private final Runnable syncDoubaoTask = new Runnable() {
         @Override
         public void run() {
             syncDoubaoCheck();
+            syncDramaCheck();
             ui.postDelayed(this, 800);
         }
     };
+
+    private void syncDramaCheck() {
+        if (cbDrama == null || sp == null) {
+            return;
+        }
+        boolean want = sp.getBoolean("shortDrama", false);
+        if (cbDrama.isChecked() != want) {
+            syncingDrama = true;
+            try {
+                cbDrama.setChecked(want);
+            } finally {
+                syncingDrama = false;
+            }
+        }
+    }
 
     private void syncDoubaoCheck() {
         if (cbDoubao == null || sp == null) {
@@ -118,6 +139,26 @@ public class MainActivity extends Activity {
         });
 
         // 唤醒动作：什么都不做（不静音、不点屏幕）
+
+        // 🎬 短剧模式：只收 下集/上集/广告/直播，听到「嗨小白」自动退出
+        cbDrama = findViewById(R.id.cbDrama);
+        cbDrama.setChecked(sp.getBoolean("shortDrama", false));
+        cbDrama.setOnCheckedChangeListener((b, checked) -> {
+            if (syncingDrama) {
+                return; // 程序自己同步过来的勾，不当作手动操作
+            }
+            sp.edit().putBoolean("shortDrama", checked).apply();
+            AutoService svc = AutoService.get();
+            if (svc != null) {
+                svc.setShortDrama(checked, "主界面手动" + (checked ? "勾选" : "取消勾选"));
+            }
+            toast(checked
+                    ? "短剧模式已开启：只听 下集 / 上集 / 广告 / 直播（听到「嗨小白」自动退出）"
+                    : "短剧模式已关闭：恢复正常接收所有命令");
+        });
+
+        // 🔴 录制动作：给一串点/划起个语音命令名，以后说一声就自动做
+        findViewById(R.id.btnRecord).setOnClickListener(v -> showRecordDialog());
 
         // 豆包语音输入法开关（默认勾选）
         cbDoubao = findViewById(R.id.cbDoubao);
@@ -247,6 +288,87 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /** 🎬 短剧模式 + 🔴 录制动作：列表 / 删除 / 新建 */
+    private void showRecordDialog() {
+        RecordedCmds.reload(this);
+        final String[] names = RecordedCmds.readNames(this);
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(36, 36, 36, 24);
+
+        TextView tip = new TextView(this);
+        tip.setTextSize(13f);
+        tip.setText("录制自己的动作：给一串“点 / 划”起一个语音命令名（比如：点赞）。\n"
+                + "录完之后，只要说这个名字，程序就自动把当时那串动作做一遍（可以多次点击）。\n"
+                + "注意：录制时屏幕会被一层透明浮层盖住，你的点击只是记位置，不会真的生效。");
+        col.addView(tip);
+
+        TextView listTitle = new TextView(this);
+        listTitle.setTextSize(13f);
+        listTitle.setPadding(0, 24, 0, 6);
+        listTitle.setText(names.length == 0 ? "已录制：（还没有）" : "已录制（点“删除”可以去掉）：");
+        col.addView(listTitle);
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        for (final String n : names) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            TextView tv = new TextView(this);
+            tv.setTextSize(13f);
+            tv.setText(n + " —— " + RecordedCmds.describe(this, n));
+            row.addView(tv, new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            Button del = new Button(this);
+            del.setText("删除");
+            del.setOnClickListener(v -> {
+                RecordedCmds.remove(MainActivity.this, n);
+                RecordedCmds.reload(MainActivity.this);
+                AutoService svc = AutoService.get();
+                if (svc != null) {
+                    svc.refreshVocabNow();
+                }
+                toast("已删除「" + n + "」");
+                if (holder[0] != null) {
+                    holder[0].dismiss();
+                }
+                showRecordDialog();
+            });
+            row.addView(del);
+            col.addView(row);
+        }
+
+        TextView newTitle = new TextView(this);
+        newTitle.setTextSize(13f);
+        newTitle.setPadding(0, 24, 0, 6);
+        newTitle.setText("新建：给这串动作起一个语音命令名，然后去要去操作的界面做动作");
+        col.addView(newTitle);
+
+        final EditText et = new EditText(this);
+        et.setHint("命令名，比如：点赞");
+        et.setTextIsSelectable(true);
+        col.addView(et);
+
+        holder[0] = new AlertDialog.Builder(this)
+                .setTitle("🔴 录制动作（自定义语音命令）")
+                .setView(col)
+                .setPositiveButton("开始录制", (d, w) -> {
+                    String name = et.getText().toString().trim();
+                    if (name.length() == 0) {
+                        toast("先写一个命令名，比如：点赞");
+                        return;
+                    }
+                    AutoService svc = AutoService.get();
+                    if (svc == null) {
+                        toast("请先在第 ③ 步里打开无障碍服务");
+                        return;
+                    }
+                    svc.startRecordingCmd(name);
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
     private void doExit() {
         sp.edit().putBoolean("enabled", false).apply();
         AutoService svc = AutoService.get();
@@ -286,6 +408,9 @@ public class MainActivity extends Activity {
                 + "后台运行权限：" + (ignored ? "已允许 ✓" : "未允许 ✗  请点 ①") + "\n"
                 + "悬浮窗权限：" + (canOverlay ? "已授予 ✓" : "未授予 ✗  请点 ②") + "\n"
                 + "摇一摇：" + (shakeOn ? "已开启 ✓" : "已关闭") + "\n"
+                + "短剧模式：" + (sp.getBoolean("shortDrama", false)
+                        ? "已开启（只听 下集/上集/广告/直播；听到「嗨小白」自动退出）"
+                        : "已关闭（收所有命令）") + "\n"
                 + "唤醒动作：什么都不做（不静音、不点屏幕）\n"
                 + "修改系统设置（亮/暗）：" + (Settings.System.canWrite(this)
                         ? "已允许 ✓" : "未允许 ✗  请点 ☀") + "\n"

@@ -95,6 +95,27 @@
             android:checked="true"
             android:text="摇一摇（点击暂停 + 上滑）" />
 
+        <CheckBox
+            android:id="@+id/cbDrama"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🎬 短剧模式（只收：下集 / 上集 / 广告 / 直播）" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="32dp"
+            android:text="短剧模式开着时，其他语音命令一律不接收（不执行、屏幕下方也不显示），直到听到「嗨小白」——听到唤醒词就自动退出短剧模式、恢复正常。"
+            android:textColor="#666666"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnRecord"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="🔴 录制动作（自定义语音命令：录一串点/划，说一声就自动做）" />
+
         <Button
             android:id="@+id/btnWrite"
             android:layout_width="match_parent"
