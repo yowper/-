@@ -22,6 +22,7 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -234,6 +235,75 @@ public class AutoService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {
+    }
+
+    // ==================== 耳机音量小键双击 ====================
+    // 用户要求：蓝牙耳机音量小键按两下 ——
+    //   短剧模式 = 上拉（上滑，下一集）；非短剧模式 = 下页命令（点 85%,85%，翻书）。
+    // 用 onKeyEvent 观察（不拦截第一下，音量键照常工作；第二下吞掉，音量只降一格）。
+
+    private long lastVolKeyAt = 0;
+    private boolean volConsumeUp = false;
+
+    /** 两下之间的最大间隔 */
+    private static final long VOL_DOUBLE_MS = 600;
+
+    @Override
+    protected boolean onKeyEvent(KeyEvent event) {
+        try {
+            if (event == null || event.getKeyCode() != KeyEvent.KEYCODE_VOLUME_DOWN) {
+                return false;
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                boolean eat = volConsumeUp;
+                volConsumeUp = false;
+                return eat; // 第二下的 UP 也要吞，不然系统侧音量处理可能不一致
+            }
+            if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() > 0) {
+                return false;
+            }
+            long now = System.currentTimeMillis();
+            if (now - lastVolKeyAt <= VOL_DOUBLE_MS) {
+                // 第二下：触发动作，并吞掉这次按键（音量只降第一下的那一格）
+                lastVolKeyAt = 0;
+                volConsumeUp = true;
+                handler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        onHeadsetDoubleVolumeDown();
+                    }
+                });
+                return true;
+            }
+            lastVolKeyAt = now;
+            return false; // 第一下照常过去（音量正常降）
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 耳机音量小键按了两下：短剧模式=上滑（下一集），平时=下页（翻书） */
+    private void onHeadsetDoubleVolumeDown() {
+        try {
+            if (!isIdle()) {
+                KeepService.note("耳机音量小键两下忽略了：正在识别一轮命令");
+                return;
+            }
+            boolean drama = shortDramaOn();
+            KeepService.note("耳机音量小键按了两下 → "
+                    + (drama ? "上滑（下一集）" : "下页（翻书）"));
+            if (drama) {
+                if (executeCommand(Commands.CMD_NEXT, "耳机音量小键两下")) {
+                    toastResult(Commands.CMD_NEXT, "耳机两下音量小：上滑（下一集）");
+                }
+            } else {
+                if (executeCommand(Commands.CMD_PAGE_DOWN, "耳机音量小键两下")) {
+                    toastResult(Commands.CMD_PAGE_DOWN, "耳机两下音量小：下页（翻书）");
+                }
+            }
+        } catch (Throwable t) {
+            KeepService.note("耳机双击处理出错：" + t.getClass().getSimpleName());
+        }
     }
 
     @Override

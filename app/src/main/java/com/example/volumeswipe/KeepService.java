@@ -20,9 +20,9 @@ import android.os.IBinder;
 import android.os.Looper;
 
 /**
- * 常驻服务：摇一摇触发 + 唤醒词监听（Vosk）。
+ * 常驻服务：摇一摇触发（短剧模式专用）+ 唤醒词监听（Vosk）。
  *
- * 摇一摇 = 点击 (50%, 25%) 暂停 + 上滑（需要无障碍手势能力）
+ * 摇一摇（只在短剧模式）= 只上滑（需要无障碍手势能力）
  * 「嗨小白」= 弹出输入框（豆包识别命令）
  */
 public class KeepService extends Service {
@@ -448,6 +448,11 @@ public class KeepService extends Service {
             if (svc == null) {
                 return;
             }
+            // 用户要求：摇一摇只在【短剧模式】里起作用
+            if (!svc.shortDramaOn()) {
+                KeepService.note("摇一摇忽略了：短剧模式才起作用（说「短剧」开启）");
+                return;
+            }
             // 正在识别一轮命令（框/键盘在身上）时不要动手：
             // 摇一下手机就把整轮搞乱，用户根本没预期
             if (!svc.isIdle()) {
@@ -459,15 +464,9 @@ public class KeepService extends Service {
                 KeepService.note("摇一摇忽略了：现在没有视频/声音在播");
                 return;
             }
-            // 摇一摇 = 点 (50%,20%) 暂停 → 600ms 后上滑
-            KeepService.note("摇一摇 → 点 (50%,20%) 暂停 + 上滑");
-            svc.tapAt(50, 20);
-            ui.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    svc.swipeUpOnly();
-                }
-            }, 600);
+            // 用户要求：去掉点 (50%,20%) 那一下，只上滑（只滑一次的锁照常生效）
+            KeepService.note("摇一摇（短剧模式）→ 只上滑");
+            svc.swipeUpOnly();
         } catch (Exception ignored) {
         }
     }
