@@ -411,10 +411,9 @@ public class KeepService extends Service {
                     float y = event.values[1];
                     float z = event.values[2];
                     float g = (float) Math.sqrt(x * x + y * y + z * z) / 9.81f;
-                    // 真摇 = 900ms 内连续凑够 3 个超过 2.6g 的峰（幅度不能太小）。
-                    // 以前是“单次 > 2.2g 就触发”，拿手机、放手机、
-                    // 甚至通知振动一下都算（用户反馈的“莫名上拉”）。
-                    if (g > 2.6f) {
+                    // 真摇 = 900ms 内连续凑够 3 个超过 2.2g 的峰（用户要求：不用用力摇，
+                    // 以前是 2.6g，太费劲）。仍要 3 个峰 + 冷却，防拿放手机/振动误触发。
+                    if (g > 2.2f) {
                         long now = System.currentTimeMillis();
                         if (now - shakeWindowAt > 900) {
                             shakeWindowAt = now;

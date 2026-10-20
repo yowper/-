@@ -237,16 +237,19 @@ public class AutoService extends AccessibilityService {
     public void onInterrupt() {
     }
 
-    // ==================== 耳机音量小键双击 ====================
-    // 用户要求：蓝牙耳机音量小键按两下 ——
-    //   短剧模式 = 上拉（上滑，下一集）；非短剧模式 = 下页命令（点 85%,85%，翻书）。
-    // 用 onKeyEvent 观察（不拦截第一下，音量键照常工作；第二下吞掉，音量只降一格）。
+    // ==================== 手机音量下键双击 ====================
+    // 用户要求：连着两下【音量下键】（间隔放宽到 0.9 秒，确认是想触发动作）= 下滑（上一集），
+    // 同时自动恢复音量（等于自动按了两下音量上键，把两下降的补回去）。
+    // 蓝牙耳机的音量键手机收不到（在耳机本地调音量），所以耳机上双击只会变音量、不会触发。
+    // 做法：第一下放行（音量正常降）、记住当时的音量；第二下吞掉 + 触发下滑 + 恢复音量。
 
     private long lastVolKeyAt = 0;
     private boolean volConsumeUp = false;
+    /** 双击前（第一下按下时）的媒体音量，触发后恢复用它 */
+    private int volBeforeDoubleDown = -1;
 
-    /** 两下之间的最大间隔 */
-    private static final long VOL_DOUBLE_MS = 600;
+    /** 两下之间的最大间隔（用户要求放宽） */
+    private static final long VOL_DOUBLE_MS = 900;
 
     @Override
     protected boolean onKeyEvent(KeyEvent event) {
@@ -263,46 +266,67 @@ public class AutoService extends AccessibilityService {
                 return false;
             }
             long now = System.currentTimeMillis();
-            if (now - lastVolKeyAt <= VOL_DOUBLE_MS) {
-                // 第二下：触发动作，并吞掉这次按键（音量只降第一下的那一格）
+            if (now - lastVolKeyAt <= VOL_DOUBLE_MS && lastVolKeyAt > 0) {
+                // 第二下：触发下滑 + 自动恢复音量，并吞掉这次按键
                 lastVolKeyAt = 0;
                 volConsumeUp = true;
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
-                        onHeadsetDoubleVolumeDown();
+                        onDoubleVolumeDown();
                     }
                 });
                 return true;
             }
+            // 第一下：记住双击前的音量（恢复用），照常放行（音量正常降）
             lastVolKeyAt = now;
-            return false; // 第一下照常过去（音量正常降）
+            try {
+                AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                if (am != null) {
+                    volBeforeDoubleDown = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                }
+            } catch (Throwable ignored) {
+            }
+            return false;
         } catch (Throwable t) {
             return false;
         }
     }
 
-    /** 耳机音量小键按了两下：短剧模式=上滑（下一集），平时=下页（翻书） */
-    private void onHeadsetDoubleVolumeDown() {
+    /** 手机音量下键连按两下 = 下滑（上一集）+ 自动恢复音量（等于自动按两下音量上键） */
+    private void onDoubleVolumeDown() {
         try {
             if (!isIdle()) {
-                KeepService.note("耳机音量小键两下忽略了：正在识别一轮命令");
+                KeepService.note("音量下键两下忽略了：正在识别一轮命令");
                 return;
             }
-            boolean drama = shortDramaOn();
-            KeepService.note("耳机音量小键按了两下 → "
-                    + (drama ? "上滑（下一集）" : "下页（翻书）"));
-            if (drama) {
-                if (executeCommand(Commands.CMD_NEXT, "耳机音量小键两下")) {
-                    toastResult(Commands.CMD_NEXT, "耳机两下音量小：上滑（下一集）");
+            KeepService.note("手机音量下键按了两下 → 下滑（上一集），音量自动恢复");
+            // 自动恢复音量（用户要求：等于自动按两下音量上键，把降掉的补回去）
+            if (volBeforeDoubleDown > 0) {
+                try {
+                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                    if (am != null) {
+                        int now = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                        if (now < volBeforeDoubleDown) {
+                            am.setStreamVolume(AudioManager.STREAM_MUSIC, volBeforeDoubleDown, 0);
+                            getSharedPreferences("cfg", MODE_PRIVATE).edit()
+                                    .putBoolean("soundMuted", false).apply();
+                            KeepService.note("音量已自动恢复：" + now + " → "
+                                    + am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                    + "（双击前是 " + volBeforeDoubleDown + "）");
+                        }
+                    }
+                } catch (Throwable t2) {
+                    KeepService.note("音量恢复失败：" + t2.getClass().getSimpleName());
                 }
-            } else {
-                if (executeCommand(Commands.CMD_PAGE_DOWN, "耳机音量小键两下")) {
-                    toastResult(Commands.CMD_PAGE_DOWN, "耳机两下音量小：下页（翻书）");
-                }
+                volBeforeDoubleDown = -1;
+            }
+            // 下滑（上一集）：只滑一次的锁、防重都照常生效
+            if (executeCommand(Commands.CMD_PREV, "音量下键两下")) {
+                toastResult(Commands.CMD_PREV, "音量下键两下：下滑（上一集）");
             }
         } catch (Throwable t) {
-            KeepService.note("耳机双击处理出错：" + t.getClass().getSimpleName());
+            KeepService.note("音量键双击处理出错：" + t.getClass().getSimpleName());
         }
     }
 
@@ -485,24 +509,27 @@ public class AutoService extends AccessibilityService {
         boolean old = shortDramaOn();
         getSharedPreferences("cfg", MODE_PRIVATE).edit().putBoolean("shortDrama", on).apply();
         if (old != on) {
-            postStatus(on ? "短剧模式：已开启（只听 下集 / 上集 / 广告 / 直播、声音大/小、禁音/声音 和自己录的命令）"
+            postStatus(on ? "短剧模式：已开启（大/小、亮/暗、禁音/声音、录制 和自己录的命令全局可用）"
                     : "短剧模式：已关闭（恢复接收所有命令）");
             KeepService.note((on ? "短剧模式已开启" : "短剧模式已关闭")
                     + (why == null || why.length() == 0 ? "" : "：" + why));
         }
     }
 
-    /** 短剧模式允许的命令：下一集 / 上一集 / 广告 / 直播
-     *  + 禁音/声音（用户要求：接电话要把音乐关掉）
+    /** 短剧模式允许的命令（用户要求：音量/亮暗/录制都要【全局】能用，所以也在这里）：
+     *  下一集 / 上一集 / 广告 / 直播
+     *  + 大/小（音量）、亮/暗（亮度）、禁音/声音
+     *  + 录制（开始录制动作）
      *  + 「短剧」（再说一次就退出短剧模式）+「小白再见」（安全阀）。
-     *  声量大/小不在这里面 —— resolveCmd 里单独放行【两个字以上】的说法
-     *  （声音大/声音小 ✓；单字 大/小 容易被台词撞上，短剧模式里仍然挡掉）。
-     *  自己录的命令也不在这里面 —— resolveCmd 里它优先放行 */
+     *  自己录的命令不在这里面 —— resolveCmd 里它优先放行 */
     private static boolean isDramaCmd(int cmd) {
         return cmd == Commands.CMD_NEXT || cmd == Commands.CMD_PREV
                 || cmd == Commands.CMD_SKIP_AD || cmd == Commands.CMD_EXIT_LIVE
                 || cmd == Commands.CMD_DRAMA_TOGGLE
+                || cmd == Commands.CMD_VOL_UP || cmd == Commands.CMD_VOL_DOWN
+                || cmd == Commands.CMD_BRIGHT_UP || cmd == Commands.CMD_BRIGHT_DOWN
                 || cmd == Commands.CMD_SOUND_OFF || cmd == Commands.CMD_SOUND_ON
+                || cmd == Commands.CMD_RECORD_TOGGLE
                 || cmd == Commands.CMD_EXIT;
     }
 
@@ -528,12 +555,9 @@ public class AutoService extends AccessibilityService {
             return Commands.CMD_RECORDED;
         }
         if (shortDramaOn()) {
-            // 音量：两个字以上的说法放行（声音大/声音小/音量大…），单字 大/小 仍然不要
-            boolean volOk = (cmd == Commands.CMD_VOL_UP || cmd == Commands.CMD_VOL_DOWN)
-                    && t.length() >= 2;
-            if (cmd != Commands.CMD_NONE && !isDramaCmd(cmd) && !volOk) {
+            if (cmd != Commands.CMD_NONE && !isDramaCmd(cmd)) {
                 if (verbose) {
-                    KeepService.note("短剧模式：只听 下集/上集/广告/直播、声音大/小、禁音/声音 和自己录的命令，「"
+                    KeepService.note("短剧模式：只听 下集/上集/广告/直播 和自己录的命令，「"
                             + t + "」（" + Commands.nameOf(cmd) + "）不接收；说「短剧」可退出短剧模式");
                 }
                 return Commands.CMD_NONE;
@@ -4335,7 +4359,9 @@ public class AutoService extends AccessibilityService {
     public void shutdownAll() {
         try {
             getSharedPreferences("cfg", MODE_PRIVATE).edit()
-                    .putBoolean("enabled", false).apply();
+                    .putBoolean("enabled", false)
+                    .putBoolean("shortDrama", false).apply(); // 用户要求：退出程序自动关短剧模式
+            KeepService.note("已退出：短剧模式也自动关闭了");
             skipWatching = false;
             swipeChainActive = false;
             // 唤醒时暂停了视频的话，退出前先恢复播放
