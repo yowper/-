@@ -275,12 +275,11 @@ public class AutoService extends AccessibilityService {
                 }
                 String cmdText = stripWake(t);
                 if (cmdText.length() == 0) {
-                    // 单独说「嗨小白」/「小白」= 点 (50%,15%) 暂停/恢复播放
+                    // 单独说「嗨小白」/「小白」：什么都不做！
+                    // （用户定稿：唤醒时不静音、不点屏幕。这里以前会去点 (50%,20%)，
+                    //   结果免豆包模式下说唤醒词变成了暂停/播放，已删除。）
                     if (containsWake(t)) {
-                        pausedByUs = false;
-                        tapAt(PAUSE_X, PAUSE_Y);
-                        toast("暂停 / 恢复播放");
-                        KeepService.note("已点 (50%,20%)：暂停/恢复");
+                        KeepService.note("听到唤醒词「" + t + "」：免豆包模式直接听命令，唤醒词本身不做任何动作");
                     }
                     return;
                 }
@@ -2754,6 +2753,7 @@ public class AutoService extends AccessibilityService {
             case Commands.CMD_NEXT:
                 // 唤醒时把视频暂停了：很多 App 暂停状态下上滑不换集，先恢复再滑；
                 // 而且必须等键盘收完再滑（不然滑在键盘上，拉到一半弹回）
+                KeepService.note("「" + text + "」→ 上滑（下一集）");
                 runAfterResume(new Runnable() {
                     @Override
                     public void run() {
@@ -2767,6 +2767,7 @@ public class AutoService extends AccessibilityService {
                 });
                 break;
             case Commands.CMD_PREV:
+                KeepService.note("「" + text + "」→ 下滑（上一集）");
                 runAfterResume(new Runnable() {
                     @Override
                     public void run() {

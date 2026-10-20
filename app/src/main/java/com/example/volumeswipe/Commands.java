@@ -151,9 +151,20 @@ public final class Commands {
             return CMD_NONE;
         }
 
-        // 退出指令放最前面，优先级最高
+        // 退出指令放最前面，优先级最高（「小白再见」里含唤醒词）
         if (hit(t, KW_EXIT)) {
             return CMD_EXIT;
+        }
+
+        // 唤醒词本身绝不能被当成命令！
+        // 之前「嗨小白」里的「小」命中了下面的单字兑底（音量小），
+        // 结果：说唤醒词不但不唤醒，还把音量一路压到 0（用户看到的就是“被静音了”）。
+        // 所以先把唤醒词从句子里削掉，再拿剩下的部分去匹配：
+        //   「嗨小白」      → 空 → CMD_NONE（交给上层当唤醒）
+        //   「嗨小白下一集」→ 「下一集」 → CMD_NEXT
+        t = stripWake(t);
+        if (t.length() == 0) {
+            return CMD_NONE;
         }
 
         // 豆包开关：必须放在「打开/启动」兑底之前，否则「打开豆包」会被当成开 App
@@ -248,5 +259,13 @@ public final class Commands {
             }
         }
         return false;
+    }
+
+    /** 把唤醒词从句子里削掉（“嗨小白下一集” → “下一集”） */
+    private static String stripWake(String t) {
+        for (String w : WakeEngine.WAKES) {
+            t = t.replace(w, "");
+        }
+        return t;
     }
 }

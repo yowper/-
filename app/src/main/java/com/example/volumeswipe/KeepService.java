@@ -120,6 +120,9 @@ public class KeepService extends Service {
     private SensorManager sensorManager;
     private SensorEventListener shakeListener;
     private long lastShake = 0;
+    /** 摇晃计数（单次超过 1.8g 算一个峰，700ms 内要凑够 3 个才算“真摇”） */
+    private long shakeWindowAt = 0;
+    private int shakePeaks = 0;
 
     public static KeepService instance() {
         return sInstance;
@@ -392,11 +395,19 @@ public class KeepService extends Service {
                     float y = event.values[1];
                     float z = event.values[2];
                     float g = (float) Math.sqrt(x * x + y * y + z * z) / 9.81f;
-                    // 超过 2.2g 算一次有效摇晃
-                    if (g > 2.2f) {
+                    // 真摇 = 700ms 内连续凑够 3 个超过 1.8g 的峰。
+                    // 以前是“单次 > 2.2g 就触发”，结果拿手机、放手机、
+                    // 甚至通知振动一下都可能当成摇一摇（用户反馈的“莫名上拉”）。
+                    if (g > 1.8f) {
                         long now = System.currentTimeMillis();
-                        if (now - lastShake > 2000) {
+                        if (now - shakeWindowAt > 700) {
+                            shakeWindowAt = now;
+                            shakePeaks = 0;
+                        }
+                        shakePeaks++;
+                        if (shakePeaks >= 3 && now - lastShake > 2500) {
                             lastShake = now;
+                            shakePeaks = 0;
                             onShake();
                         }
                     }
@@ -421,7 +432,13 @@ public class KeepService extends Service {
             if (svc == null) {
                 return;
             }
+            // 正在识别一轮命令（框/键盘在身上）时不要动手：
+            // 摇一下手机就把整轮搞乱，用户根本没预期
+            if (!svc.isIdle()) {
+                return;
+            }
             // 摇一摇 = 点 (50%,20%) 暂停 → 600ms 后上滑
+            KeepService.note("摇一摇 → 点 (50%,20%) 暂停 + 上滑");
             svc.tapAt(50, 20);
             ui.postDelayed(new Runnable() {
                 @Override
