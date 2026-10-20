@@ -181,8 +181,9 @@ public class MainActivity extends Activity {
         // ⑤ 退出
         findViewById(R.id.btnExit).setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setTitle("退出")
-                .setMessage("退出：命令条消失、语音停止、通知消失。\n"
-                        + "不会去改系统设置里的无障碍开关（下次打开 App 自动恢复）。")
+                .setMessage("退出：命令条消失、语音暂停、通知变成「已暂停」。\n"
+                        + "不会去改系统设置里的无障碍开关（服务保持活着，避免被手机自动关）；"
+                        + "下次打开 App 自动恢复。")
                 .setPositiveButton("退出", (d, w) -> doExit())
                 .setNegativeButton("取消", null)
                 .show());
@@ -199,6 +200,14 @@ public class MainActivity extends Activity {
         if (sp != null && sp.getBoolean("enabled", true) && !KeepService.alive) {
             KeepService.start(this);
         }
+        // 用户反馈：非豆包模式下本地语音没启动。每次回到 App 都重新应用一次语音设置，
+        // 引擎没起就起（applyVoiceSetting 内部有“正在识别时不打断”保护）
+        ui.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                KeepService.applyVoiceSetting(MainActivity.this);
+            }
+        }, 800);
         syncDoubaoCheck();
         ui.removeCallbacks(syncDoubaoTask);
         ui.postDelayed(syncDoubaoTask, 800);
@@ -239,7 +248,7 @@ public class MainActivity extends Activity {
                     int micY = clamp(parseInt(etMicY.getText().toString(), 66), 0, 100);
                     int listenSec = clamp(parseInt(etListen.getText().toString(), 3), 3, 20);
                     int micDelayMs = clamp(parseInt(etMicDelay.getText().toString(), 200), 0, 3000);
-                    int volMs = clamp(parseInt(etVolMs.getText().toString(), 1500), 500, 5000);
+                    int volMs = clamp(parseInt(etVolMs.getText().toString(), 1000), 200, 5000);
 
                     sp.edit()
                             .putInt("dur", durMs)

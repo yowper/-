@@ -2,10 +2,8 @@ package com.example.volumeswipe;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -225,8 +223,8 @@ public class AutoService extends AccessibilityService {
                     .putBoolean("shortDrama", false).apply();
         } catch (Throwable ignored) {
         }
-        // 蓝牙耳机音量下调两次（短剧模式=上拉）靠监听系统音量变化
-        registerVolChangeReceiver();
+        // 蓝牙耳机音量下调两次（短剧模式=上拉）靠轮询媒体音量
+        startVolPoller();
         // 录制模式：用户自己录的命令名要先进词表（说得出、听得懂）
         try {
             RecordedCmds.reload(this);
@@ -253,11 +251,11 @@ public class AutoService extends AccessibilityService {
     //   = 执行上拉命令（下一集），同时把音量还原（等于音量大一点按两次）。
     // 非短剧模式：音量变化就是调音量，不做任何动作。
 
-    /** 音量下调两次的识别窗口（用户可改、自动记住；默认 1500，限 500~5000） */
+    /** 音量下调两次的识别窗口（用户可改、自动记住；默认 1000，限 200~5000） */
     private long volDoubleMs() {
-        int v = getSharedPreferences("cfg", MODE_PRIVATE).getInt("volDoubleMs", 1500);
-        if (v < 500) {
-            v = 500;
+        int v = getSharedPreferences("cfg", MODE_PRIVATE).getInt("volDoubleMs", 1000);
+        if (v < 200) {
+            v = 200;
         }
         if (v > 5000) {
             v = 5000;
@@ -265,75 +263,94 @@ public class AutoService extends AccessibilityService {
         return v;
     }
 
-    private BroadcastReceiver volChangeReceiver;
     private int lastKnownVol = -1;
-    private long firstVolDropAt = 0;
     /** 两次下调之前（第一次下调时）的媒体音量，触发后还原用它 */
     private int volBeforeBtDrops = -1;
+    // 精确「两下」判定状态（机制见 onVolumeDropped 上方注释）
+    private int volDropCount = 0;
+    private Runnable volDropExpiryTask = null;
 
-    /** 监听系统音量变化（注册在 onServiceConnected，注销在 onDestroy/shutdownAll） */
-    private void registerVolChangeReceiver() {
-        try {
-            if (volChangeReceiver != null) {
-                return;
-            }
-            volChangeReceiver = new BroadcastReceiver() {
-                @Override
-                public void onReceive(Context context, Intent intent) {
-                    try {
-                        if (intent == null || !"android.media.VOLUME_CHANGED_ACTION"
-                                .equals(intent.getAction())) {
-                            return;
-                        }
-                        int stream = intent.getIntExtra(
-                                "android.media.EXTRA_VOLUME_STREAM_TYPE", -1);
-                        if (stream != AudioManager.STREAM_MUSIC) {
-                            return;
-                        }
-                        int newVol = intent.getIntExtra(
-                                "android.media.EXTRA_VOLUME_STREAM_VALUE", -1);
-                        if (newVol < 0) {
-                            return;
-                        }
-                        if (lastKnownVol >= 0 && newVol < lastKnownVol) {
+    /** 每 250ms 读一次媒体音量，只在屏幕亮时采（比广播可靠：
+     *  部分机型 VOLUME_CHANGED_ACTION 收不到或一次按键发好几条，都会漏/误判） */
+    private static final long VOL_POLL_MS = 250;
+
+    private final Runnable volPollTask = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                android.os.PowerManager pm =
+                        (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+                boolean screenOn = pm == null || pm.isInteractive();
+                if (screenOn) {
+                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                    if (am != null) {
+                        int v = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                        if (lastKnownVol >= 0 && v < lastKnownVol) {
                             onVolumeDropped(lastKnownVol);
                         }
-                        lastKnownVol = newVol;
-                    } catch (Throwable ignored) {
+                        lastKnownVol = v;
                     }
                 }
-            };
-            registerReceiver(volChangeReceiver,
-                    new IntentFilter("android.media.VOLUME_CHANGED_ACTION"));
-            KeepService.note("已在监听音量变化（短剧模式：下调两次=上拉）");
-        } catch (Throwable t) {
-            KeepService.note("音量监听注册失败：" + t.getClass().getSimpleName());
+            } catch (Throwable ignored) {
+            }
+            handler.postDelayed(this, VOL_POLL_MS);
         }
-    }
+    };
 
-    private void unregisterVolChangeReceiver() {
+    private void startVolPoller() {
         try {
-            if (volChangeReceiver != null) {
-                unregisterReceiver(volChangeReceiver);
-                volChangeReceiver = null;
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                lastKnownVol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
             }
         } catch (Throwable ignored) {
         }
+        handler.removeCallbacks(volPollTask);
+        handler.postDelayed(volPollTask, VOL_POLL_MS);
+        KeepService.note("已在监听音量变化（短剧模式：下调两次=上拉）");
     }
 
-    /** 检测到一次音量下调（before = 下调前的音量） */
-    private void onVolumeDropped(int before) {
-        long now = System.currentTimeMillis();
-        if (firstVolDropAt == 0 || now - firstVolDropAt > volDoubleMs()) {
-            // 第一次下调（或离上次太久，重新计时）
-            firstVolDropAt = now;
-            volBeforeBtDrops = before;
-            return;
-        }
-        // 窗口内的第二次下调
-        firstVolDropAt = 0;
-        final int volBefore = volBeforeBtDrops;
+    private void stopVolPoller() {
+        handler.removeCallbacks(volPollTask);
+    }
+
+    // ==================== 精确「两下」判定（用户定稿的机制） ====================
+    // 第 1 下：做标志，开窗口；窗口内没第 2 下 → 取消标志。
+    // 第 2 下：标志+1，先不发，再等一个窗口看有没有第 3 下；没有 → 发上拉 + 音量还原。
+    // 第 3 下（或更多）：撤销标志，不算命令（用户在正常调音量）。
+    // 只有【恰好两下】才触发；一次/三次都不行。
+
+    private void resetVolDropState() {
+        volDropCount = 0;
         volBeforeBtDrops = -1;
+        if (volDropExpiryTask != null) {
+            handler.removeCallbacks(volDropExpiryTask);
+            volDropExpiryTask = null;
+        }
+    }
+
+    /** 窗口到期：只有恰好两下才发上拉；其他情况复位 */
+    private void scheduleVolExpiry(long at) {
+        if (volDropExpiryTask != null) {
+            handler.removeCallbacks(volDropExpiryTask);
+        }
+        final long delay = Math.max(50, at - System.currentTimeMillis());
+        volDropExpiryTask = new Runnable() {
+            @Override
+            public void run() {
+                int c = volDropCount;
+                final int restore = volBeforeBtDrops;
+                resetVolDropState();
+                if (c == 2) {
+                    fireVolPull(restore);
+                }
+            }
+        };
+        handler.postDelayed(volDropExpiryTask, delay);
+    }
+
+    /** 恰好两下：发上拉（下一集）+ 音量还原（等于音量大一点按两次） */
+    private void fireVolPull(final int restore) {
         if (!shortDramaOn()) {
             return; // 用户要求：只在短剧模式起作用
         }
@@ -341,22 +358,22 @@ public class AutoService extends AccessibilityService {
             KeepService.note("耳机音量下调两次忽略了：正在识别一轮命令");
             return;
         }
-        KeepService.note("蓝牙耳机音量下调了两次 → 上拉（下一集），音量自动还原");
+        KeepService.note("蓝牙耳机音量下调了恰好两下 → 上拉（下一集），音量自动还原");
         handler.post(new Runnable() {
             @Override
             public void run() {
                 // 音量大一点执行两次：直接还原到下调前的值（效果一样且更准）
                 try {
                     AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                    if (am != null && volBefore > 0) {
+                    if (am != null && restore > 0) {
                         int now2 = am.getStreamVolume(AudioManager.STREAM_MUSIC);
-                        if (now2 < volBefore) {
-                            am.setStreamVolume(AudioManager.STREAM_MUSIC, volBefore, 0);
+                        if (now2 < restore) {
+                            am.setStreamVolume(AudioManager.STREAM_MUSIC, restore, 0);
                             getSharedPreferences("cfg", MODE_PRIVATE).edit()
                                     .putBoolean("soundMuted", false).apply();
                             KeepService.note("音量已自动还原：" + now2 + " → "
                                     + am.getStreamVolume(AudioManager.STREAM_MUSIC)
-                                    + "（等于音量大一点按两次，下调前是 " + volBefore + "）");
+                                    + "（等于音量大一点按两次，下调前是 " + restore + "）");
                         }
                     }
                 } catch (Throwable t2) {
@@ -369,10 +386,42 @@ public class AutoService extends AccessibilityService {
         });
     }
 
+    /** 检测到一次音量下调（before = 下调前的音量） */
+    private void onVolumeDropped(int before) {
+        // 静音期间的下调是我们自己/系统做的（广告流程禁音），不计数
+        if (getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("soundMuted", false)) {
+            resetVolDropState();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (volDropCount == 0) {
+            // 第 1 下：做标志，开窗口
+            volDropCount = 1;
+            volBeforeBtDrops = before;
+            scheduleVolExpiry(now + volDoubleMs());
+            return;
+        }
+        if (volDropCount == 1) {
+            // 第 2 下：标志+1，先不发，再等一个窗口看有没有第 3 下
+            volDropCount = 2;
+            scheduleVolExpiry(now + volDoubleMs());
+            return;
+        }
+        if (volDropCount == 2) {
+            // 第 3 下：撤销标志，不算命令（用户在正常调音量，音量保持调小的状态）
+            KeepService.note("耳机音量下调了三下 → 只是在调音量，不触发上拉");
+            volDropCount = 3;
+            scheduleVolExpiry(now + volDoubleMs()); // 静默一个窗口后复位
+            return;
+        }
+        // 4 下及以后：继续当调音量，刷新静默到期
+        scheduleVolExpiry(now + volDoubleMs());
+    }
+
     @Override
     public void onDestroy() {
         sInstance = null;
-        unregisterVolChangeReceiver();
+        stopVolPoller();
         removeStatusStripNow();
         removeRecLayer();
         removeNamingLayer();
@@ -3129,8 +3178,6 @@ public class AutoService extends AccessibilityService {
     private boolean recPumping = false;
     // 录完起名的弹框（悬浮窗，能弹键盘输入）
     private LinearLayout namingLayer;
-    /** 双击结束录制的窗口（两次点击间隔） */
-    private static final long REC_DOUBLE_TAP_MS = 400;
 
     /**
      * 开始录制。name 可以为空（语音「录制」开始的就是这种）：
@@ -3223,9 +3270,6 @@ public class AutoService extends AccessibilityService {
             float dy = 0;
             long downAt = 0;
             boolean moved = false;
-            // 双击检测：上一次单点的时间 / 记录位置
-            long lastTapUpAt = 0;
-            int lastTapStepIdx = -1;
 
             @Override
             public boolean onTouch(View v, MotionEvent e) {
@@ -3257,30 +3301,15 @@ public class AutoService extends AccessibilityService {
                             int x2 = pct(fx2, sw);
                             int y2 = pct(fy2, sh);
                             boolean isSwipe = moved && dur > 120;
-                            // 双击屏幕 = 结束录制：上一次点击的记录撤掉，
-                            // 这一下不记也不转发，直接弹框起名
-                            if (!isSwipe && lastTapUpAt > 0
-                                    && now - lastTapUpAt <= REC_DOUBLE_TAP_MS) {
-                                if (lastTapStepIdx >= 0 && lastTapStepIdx < recSteps.size()) {
-                                    recSteps.remove(lastTapStepIdx);
-                                }
-                                lastTapUpAt = 0;
-                                lastTapStepIdx = -1;
-                                refreshRecHud();
-                                endRecordingAndName();
-                                return true;
-                            }
+                            // 用户要求：不再用「双击屏幕」结束录制（有的手机双击=截图），
+                            // 结束靠说「录制」/「录制结束」或点 HUD 上的「完成」。
                             if (isSwipe) {
                                 recSteps.add(new int[]{RecordedCmds.TYPE_SWIPE,
                                         x1, y1, x2, y2,
                                         (int) Math.max(60, Math.min(3000, dur)), delay});
-                                lastTapUpAt = 0;
-                                lastTapStepIdx = -1;
                             } else {
                                 recSteps.add(new int[]{RecordedCmds.TYPE_TAP,
                                         x2, y2, 0, 0, 0, delay});
-                                lastTapUpAt = now;
-                                lastTapStepIdx = recSteps.size() - 1;
                             }
                             recLastAt = now;
                             // 用户要求：录制时也要真的点/真的滑
@@ -3412,7 +3441,8 @@ public class AutoService extends AccessibilityService {
                 + (swp > 0 ? " / 划 " + swp : "") + "）\n"
                 + "你现在做的每个动作都会【真的执行】（点哪点哪、滑哪滑哪），\n"
                 + "同时被记下来。点错就「撤销上一步」。\n"
-                + "做完【双击屏幕】结束 → 弹框起名；也可以点上面的「完成」。");
+                + "做完说「录制」或「录制结束」→ 弹框起名；也可以点上面的「完成」。\n"
+                + "（不用双击屏幕：有的手机双击=截图）");
     }
 
     /** 录完了（点「完成」按钮）：存起来 / 弹框起名 */
@@ -3898,8 +3928,8 @@ public class AutoService extends AccessibilityService {
                 break;
             }
             case Commands.CMD_RECORD_TOGGLE: {
-                // 「录制」= 开始录制（先不起名，做完【双击屏幕】结束 → 弹框起名）；
-                // 录制中再说「录制」= 结束并弹框
+                // 「录制」= 开始录制（先不起名）；
+                // 录制中再说「录制」（或「录制结束」）= 结束并弹框（用户要求：不用双击屏幕）
                 if (recLayer != null) {
                     endRecordingAndName();
                 } else {
@@ -4224,7 +4254,7 @@ public class AutoService extends AccessibilityService {
     /** 收到「关闭小助手」：把一切收干净 */
     public void shutdownAll() {
         try {
-            unregisterVolChangeReceiver();
+            stopVolPoller();
             getSharedPreferences("cfg", MODE_PRIVATE).edit()
                     .putBoolean("enabled", false)
                     .putBoolean("shortDrama", false).apply(); // 用户要求：退出程序自动关短剧模式
@@ -4240,9 +4270,11 @@ public class AutoService extends AccessibilityService {
             hideProbePanel();
             handler.removeCallbacksAndMessages(null);
             if (KeepService.instance() != null) {
-                KeepService.stop(this);
+                // 用户反馈：服务整个停掉后，有的手机会把无障碍开关也一起关。
+                // 改成只暂停采音、通知留一条「已暂停」，进程和无障碍都活着。
+                KeepService.pauseForExit(this);
             }
-            toast("小助手已关闭");
+            toast("小助手已关闭（打开 App 恢复；无障碍开关保持不动）");
         } catch (Throwable ignored) {
         }
     }

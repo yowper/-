@@ -147,6 +147,21 @@ public class KeepService extends Service {
         }
     }
 
+    /** 退出程序时不再整个停掉前台服务：
+     *  服务一死，有的手机会把无障碍开关也一起关掉（用户反馈：再次启动无障碍总被自动关）。
+     *  改成暂停采音（麦克风让出去）、通知改成「已暂停」，打开 App 再自动恢复。 */
+    public static void pauseForExit(Context ctx) {
+        if (sInstance == null) {
+            return;
+        }
+        try {
+            sInstance.stopWake();
+            sInstance.voiceState = "已暂停：打开「手机助手」恢复";
+            sInstance.updateNoti(sInstance.voiceState);
+        } catch (Throwable ignored) {
+        }
+    }
+
     public static void applyVoiceSetting(Context ctx) {
         if (sInstance != null) {
             sInstance.applyVoiceSetting();
@@ -263,7 +278,7 @@ public class KeepService extends Service {
         if (svc != null && !svc.isIdle()) {
             return;
         }
-        if (getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("useDoubao", true)) {
+        if (getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("useDoubao", false)) {
             applyVocab(WakeEngine.idleVocab(), "在听唤醒词：说「嗨小白」");
         } else {
             // 不用豆包：不需要唤醒词，直接听命令
@@ -302,7 +317,15 @@ public class KeepService extends Service {
                 && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
             voiceState = "缺少录音权限";
-            updateNoti("缺少录音权限");
+            updateNoti("缺少录音权限（授权后几秒自动开）");
+            // 用户在系统弹窗里授权后没有回调：过 5 秒自己再试一次，
+            // 直到拿到权限（用户反馈：开 App 后本地语音不启动，就是这个原因卡住没重试）
+            ui.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    applyVoiceSetting();
+                }
+            }, 5000);
             return;
         }
 
