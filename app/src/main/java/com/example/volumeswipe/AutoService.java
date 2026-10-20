@@ -462,6 +462,13 @@ public class AutoService extends AccessibilityService {
                 }
                 return Commands.CMD_NONE;
             }
+            if (rec != null) {
+                // 名字恰好撞上 下集/广告 这种：短剧模式下也一律做命令，不放行录制动作
+                if (verbose) {
+                    KeepService.note("短剧模式：不放行自己录制的「" + rec + "」（短剧模式只收那四条）");
+                }
+                return cmd;
+            }
         }
         if (rec != null) {
             return Commands.CMD_RECORDED;
