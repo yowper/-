@@ -241,6 +241,7 @@ public class AutoService extends AccessibilityService {
         sInstance = null;
         removeStatusStripNow();
         removeRecLayer();
+        removeNamingLayer();
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -2977,14 +2978,17 @@ public class AutoService extends AccessibilityService {
     // 转发队列：一个手势做完（onCompleted）才发下一个，免得互相取消
     private final java.util.ArrayDeque<GestureDescription> recQueue = new java.util.ArrayDeque<>();
     private boolean recPumping = false;
+    // 录完起名的弹框（悬浮窗，能弹键盘输入）
+    private LinearLayout namingLayer;
+    /** 双击结束录制的窗口（两次点击间隔） */
+    private static final long REC_DOUBLE_TAP_MS = 400;
 
-    /** 开始录制（主界面点了「🔴 录制动作」后调这里） */
+    /**
+     * 开始录制。name 可以为空（语音「录制」开始的就是这种）：
+     * 做完动作【双击屏幕】结束 → 弹框起名 → 保存。
+     */
     public void startRecordingCmd(final String name) {
         final String n = Commands.normalize(name);
-        if (n.length() == 0) {
-            toast("命令名要有汉字，比如「点赞」");
-            return;
-        }
         if (wm == null) {
             wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         }
@@ -3070,6 +3074,9 @@ public class AutoService extends AccessibilityService {
             float dy = 0;
             long downAt = 0;
             boolean moved = false;
+            // 双击检测：上一次单点的时间 / 记录位置
+            long lastTapUpAt = 0;
+            int lastTapStepIdx = -1;
 
             @Override
             public boolean onTouch(View v, MotionEvent e) {
@@ -3101,13 +3108,30 @@ public class AutoService extends AccessibilityService {
                             int x2 = pct(fx2, sw);
                             int y2 = pct(fy2, sh);
                             boolean isSwipe = moved && dur > 120;
+                            // 双击屏幕 = 结束录制：上一次点击的记录撤掉，
+                            // 这一下不记也不转发，直接弹框起名
+                            if (!isSwipe && lastTapUpAt > 0
+                                    && now - lastTapUpAt <= REC_DOUBLE_TAP_MS) {
+                                if (lastTapStepIdx >= 0 && lastTapStepIdx < recSteps.size()) {
+                                    recSteps.remove(lastTapStepIdx);
+                                }
+                                lastTapUpAt = 0;
+                                lastTapStepIdx = -1;
+                                refreshRecHud();
+                                endRecordingAndName();
+                                return true;
+                            }
                             if (isSwipe) {
                                 recSteps.add(new int[]{RecordedCmds.TYPE_SWIPE,
                                         x1, y1, x2, y2,
                                         (int) Math.max(60, Math.min(3000, dur)), delay});
+                                lastTapUpAt = 0;
+                                lastTapStepIdx = -1;
                             } else {
                                 recSteps.add(new int[]{RecordedCmds.TYPE_TAP,
                                         x2, y2, 0, 0, 0, delay});
+                                lastTapUpAt = now;
+                                lastTapStepIdx = recSteps.size() - 1;
                             }
                             recLastAt = now;
                             // 用户要求：录制时也要真的点/真的滑
@@ -3142,9 +3166,10 @@ public class AutoService extends AccessibilityService {
             toast("录制浮层加不上（是不是没有悬浮窗权限？）");
             return;
         }
-        KeepService.note("开始录制语音命令「" + n
-                + "」：你现在做的每个动作都会真的执行（边录边转发），做完点上方「完成」");
-        toast("开始录制「" + n + "」：动作会真的执行并记下来，完事点屏幕上方「完成」");
+        KeepService.note("开始录制动作（还没起名）：现在做的动作会真的执行并被记下来，做完【双击屏幕】结束");
+        toast(n.length() > 0
+                ? "开始录制「" + n + "」：动作会真的执行并记下来，做完双击屏幕结束"
+                : "开始录制：去做动作（会真的执行），做完双击屏幕结束");
     }
 
     /** 把刚录到的动作原样转发给系统（真的点/真的滑） */
@@ -3231,36 +3256,166 @@ public class AutoService extends AccessibilityService {
                 swp++;
             }
         }
-        recHud.setText("🔴 录制「" + recName + "」：已记 " + recSteps.size() + " 步（点 " + tap
+        String title = recName.length() > 0
+                ? "🔴 录制「" + recName + "」"
+                : "🔴 录制中（还没起名）";
+        recHud.setText(title + "：已记 " + recSteps.size() + " 步（点 " + tap
                 + (swp > 0 ? " / 划 " + swp : "") + "）\n"
                 + "你现在做的每个动作都会【真的执行】（点哪点哪、滑哪滑哪），\n"
-                + "同时被记下来。点错就「撤销上一步」，做完点「完成」。\n"
-                + "录完用语音说「" + recName + "」就会自动重做这串动作。");
+                + "同时被记下来。点错就「撤销上一步」。\n"
+                + "做完【双击屏幕】结束 → 弹框起名；也可以点上面的「完成」。");
     }
 
-    /** 录完了：存起来 + 把名字加进识别词表 */
+    /** 录完了（点「完成」按钮）：存起来 / 弹框起名 */
     private void finishRecording() {
+        endRecordingAndName();
+    }
+
+    /** 收尾：有名字直接存；没名字弹框让用户起一个（双击结束也走这里） */
+    private void endRecordingAndName() {
         final String n = recName;
         java.util.List<int[]> steps = new java.util.ArrayList<>(recSteps);
         removeRecLayer();
-        if (n.length() == 0) {
-            return;
-        }
         if (steps.isEmpty()) {
-            RecordedCmds.remove(this, n);
-            toast("「" + n + "」一步都没记到，没保存");
-            KeepService.note("录制「" + n + "」没记到任何动作 → 没保存");
-            refreshVocabNow();
+            if (n.length() > 0) {
+                RecordedCmds.remove(this, n);
+            }
+            toast("一步都没记到，没保存");
+            KeepService.note("录制没记到任何动作 → 没保存");
             return;
         }
+        if (n.length() > 0) {
+            saveRecorded(n, steps);
+        } else {
+            showNamingDialog(steps);
+        }
+    }
+
+    /** 存好一个录制命令 + 名字进词表 */
+    private void saveRecorded(final String n, final java.util.List<int[]> steps) {
         RecordedCmds.save(this, n, steps);
         RecordedCmds.reload(this);
         String desc = RecordedCmds.describe(this, n);
         postStatus("录制完成：「" + n + "」" + desc);
         KeepService.note("录制完成：语音命令「" + n + "」= " + desc
-                + "（刚才的动作已边录边真执行过了；以后说「" + n + "」就自动重做）");
+                + "（以后说「" + n + "」就自动重做；短剧模式里也能用）");
         toast("录好了：「" + n + "」= " + desc + "。以后说这个名字就自动做");
         refreshVocabNow();
+    }
+
+    /** 录完弹框起名（悬浮窗，能弹键盘输入） */
+    private void showNamingDialog(final java.util.List<int[]> steps) {
+        if (wm == null) {
+            wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        }
+        if (wm == null) {
+            toast("悬浮窗没准备好，这串动作没保存");
+            return;
+        }
+        removeNamingLayer();
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setBackgroundColor(0xF2000000);
+        col.setPadding(30, 26, 30, 22);
+
+        TextView tv = new TextView(this);
+        tv.setTextColor(0xFFFFFFFF);
+        tv.setTextSize(13f);
+        tv.setText("录好了 " + steps.size() + " 步。给这串动作起一个语音命令名：\n"
+                + "（以后说这个名字，程序就自动重做这串动作）");
+
+        final EditText et = new EditText(this);
+        et.setHint("命令名，比如：点赞");
+        et.setTextSize(14f);
+        et.setSingleLine(true);
+
+        Button ok = new Button(this);
+        ok.setText("保存");
+        ok.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String n = Commands.normalize(et.getText().toString());
+                if (n.length() == 0) {
+                    toast("先写一个命令名，比如：点赞");
+                    return;
+                }
+                removeNamingLayer();
+                saveRecorded(n, steps);
+            }
+        });
+        Button drop = new Button(this);
+        drop.setText("丢弃");
+        drop.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                removeNamingLayer();
+                toast("已丢弃，没保存");
+                KeepService.note("录制的动作已丢弃（没起名字）");
+            }
+        });
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.addView(ok, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(drop, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        col.addView(tv, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        col.addView(et, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        col.addView(row, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // 故意不加 FLAG_NOT_FOCUSABLE：不加才能弹键盘输入
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                winType(),
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.CENTER;
+        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE;
+        try {
+            wm.addView(col, lp);
+            namingLayer = col;
+        } catch (Exception e) {
+            namingLayer = null;
+            toast("起名弹框加不上（悬浮窗权限？），这串动作没保存");
+            return;
+        }
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (namingLayer == null) {
+                        return;
+                    }
+                    et.requestFocus();
+                    InputMethodManager imm = (InputMethodManager) getSystemService(
+                            Context.INPUT_METHOD_SERVICE);
+                    if (imm != null) {
+                        imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }, 250);
+        KeepService.note("录制结束：已记 " + steps.size() + " 步，等起名保存");
+        toast("双击结束录制：起个名字保存（共 " + steps.size() + " 步）");
+    }
+
+    private void removeNamingLayer() {
+        if (namingLayer != null && wm != null) {
+            try {
+                wm.removeView(namingLayer);
+            } catch (Exception ignored) {
+            }
+        }
+        namingLayer = null;
     }
 
     private void removeRecLayer() {
@@ -3594,6 +3749,16 @@ public class AutoService extends AccessibilityService {
                 // 用户要求：「短剧」= 像豆包一样说一声就切换（没开就进、开着就退）
                 boolean dramaWas = shortDramaOn();
                 setShortDrama(!dramaWas, "语音「短剧」");
+                break;
+            }
+            case Commands.CMD_RECORD_TOGGLE: {
+                // 「录制」= 开始录制（先不起名，做完【双击屏幕】结束 → 弹框起名）；
+                // 录制中再说「录制」= 结束并弹框
+                if (recLayer != null) {
+                    endRecordingAndName();
+                } else {
+                    startRecordingCmd("");
+                }
                 break;
             }
             case Commands.CMD_EXIT:
@@ -4041,6 +4206,7 @@ public class AutoService extends AccessibilityService {
             removeBox();
             removePickerMic();
             removeRecLayer();
+            removeNamingLayer();
             removeStatusStripNow();
             hideProbePanel();
             handler.removeCallbacksAndMessages(null);

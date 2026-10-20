@@ -29,6 +29,7 @@ public final class Commands {
     public static final int CMD_DOUBAO_TOGGLE = 18; // 「豆包」：勾着就关、没勾就开
     public static final int CMD_RECORDED = 19;      // 自己录制的命令（名字→一串点/划动作）
     public static final int CMD_DRAMA_TOGGLE = 20;  // 「短剧」：像「豆包」一样，说一声切换短剧模式
+    public static final int CMD_RECORD_TOGGLE = 21; // 「录制」：开始录制动作（录制中再说=结束并弹框起名）
 
     private static final String[] KW_EXIT = {
             "小白再见", "再见小白", "小白拜拜"
@@ -99,6 +100,9 @@ public final class Commands {
     private static final String[] KW_DRAMA = {
             "短剧", "短剧模式"
     };
+    private static final String[] KW_RECORD = {
+            "录制", "开始录制", "录制动作", "录制命令"
+    };
 
     private Commands() {
     }
@@ -110,7 +114,8 @@ public final class Commands {
                 KW_EXIT, KW_PAGE_UP, KW_PAGE_DOWN, KW_SKIP_AD, KW_EXIT_LIVE,
                 KW_PREV, KW_NEXT, KW_VOL_UP, KW_VOL_DOWN,
                 KW_BRIGHT_UP, KW_BRIGHT_DOWN,
-                KW_DOUBAO_ON, KW_DOUBAO_OFF, KW_TEST_SECONDS, KW_TOGGLE_PLAY, KW_DRAMA
+                KW_DOUBAO_ON, KW_DOUBAO_OFF, KW_TEST_SECONDS, KW_TOGGLE_PLAY, KW_DRAMA,
+                KW_RECORD
         };
         for (String[] arr : all) {
             for (String k : arr) {
@@ -198,6 +203,10 @@ public final class Commands {
         //   （用户要求：像「豆包」一样用语音切换，不用勾选框，也不用「嗨小白」退出）
         if (t.contains("短剧")) {
             return CMD_DRAMA_TOGGLE;
+        }
+        // 6) 「录制」= 开始录制动作（录制中再说一次 = 结束并弹框起名）
+        if (t.contains("录制")) {
+            return CMD_RECORD_TOGGLE;
         }
         if (hit(t, KW_TEST_SECONDS)) {
             return CMD_TEST_SECONDS;
@@ -346,6 +355,8 @@ public final class Commands {
                 return "自己录制的动作";
             case CMD_DRAMA_TOGGLE:
                 return "短剧模式（开/关）";
+            case CMD_RECORD_TOGGLE:
+                return "录制动作（开始/结束）";
             default:
                 return "";
         }

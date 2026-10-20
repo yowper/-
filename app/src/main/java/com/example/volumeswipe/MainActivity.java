@@ -264,10 +264,12 @@ public class MainActivity extends Activity {
 
         TextView tip = new TextView(this);
         tip.setTextSize(13f);
-        tip.setText("录制自己的动作：给一串“点 / 划”起一个语音命令名（比如：点赞）。\n"
-                + "录制时你的每个动作都会【真的执行】（点哪点哪、滑哪滑哪，包括上滑/左滑），\n"
-                + "同时被记下来；录完之后说这个名字，就自动重做这串动作（含间隔，每步再加 0.2 秒延时）。\n"
-                + "短剧模式里自己录的命令也能用。名字最好 2 个字以上。");
+        tip.setText("用语音说「录制」就能开始（最快）：开始后直接去做动作，\n"
+                + "每个动作都会【真的执行】（点哪点哪、滑哪滑哪，包括上滑/左滑）并被记下来，\n"
+                + "做完【双击屏幕】结束 → 弹出文本框起个命令名 → 保存。\n"
+                + "以后说这个名字，程序就自动重做这串动作（含间隔，每步再加 0.2 秒延时）。\n"
+                + "短剧模式里自己录的命令也能用。名字最好 2 个字以上（单字容易被台词撞上）。\n"
+                + "（不想双击的话，录制浮层上面也有「完成」按钮。）");
         col.addView(tip);
 
         TextView listTitle = new TextView(this);
@@ -304,32 +306,17 @@ public class MainActivity extends Activity {
             col.addView(row);
         }
 
-        TextView newTitle = new TextView(this);
-        newTitle.setTextSize(13f);
-        newTitle.setPadding(0, 24, 0, 6);
-        newTitle.setText("新建：给这串动作起一个语音命令名，然后去要去操作的界面做动作");
-        col.addView(newTitle);
-
-        final EditText et = new EditText(this);
-        et.setHint("命令名，比如：点赞");
-        et.setTextIsSelectable(true);
-        col.addView(et);
-
         holder[0] = new AlertDialog.Builder(this)
                 .setTitle("🔴 录制动作（自定义语音命令）")
                 .setView(col)
-                .setPositiveButton("开始录制", (d, w) -> {
-                    String name = et.getText().toString().trim();
-                    if (name.length() == 0) {
-                        toast("先写一个命令名，比如：点赞");
-                        return;
-                    }
+                .setPositiveButton("▶ 现在就开始录制", (d, w) -> {
                     AutoService svc = AutoService.get();
                     if (svc == null) {
                         toast("请先在第 ③ 步里打开无障碍服务");
                         return;
                     }
-                    svc.startRecordingCmd(name);
+                    // 名字先不起：做完动作【双击屏幕】结束 → 弹出文本框再起名
+                    svc.startRecordingCmd("");
                 })
                 .setNegativeButton("关闭", null)
                 .show();
