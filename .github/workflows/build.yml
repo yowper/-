@@ -3,10 +3,11 @@ name: Build APK
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]          # 推 v2.1 这类 tag 时：编译 + 自动挂到 Release
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write           # 发布 Release 需要写权限
 
 jobs:
   build:
@@ -22,10 +23,24 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 不用第三方 setup-android：它在本 runner 上会直接失败（实测挂在第 4 步）。
+      # 这里用官方 cmdline-tools 自己装 platform 34 + build-tools 34.0.0，可控。
       - name: 安装 Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          set -e
+          SDK="$HOME/android-sdk"
+          mkdir -p "$SDK/cmdline-tools"
+          curl -fsSL -o /tmp/cmdline.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdline.zip -d "$SDK/cmdline-tools"
+          mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+          SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SM" --licenses > /dev/null 2>&1 || true
+          yes | "$SM" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "装好了："; ls "$SDK/platforms" "$SDK/build-tools"
 
-      - name: 安装 Gradle
+      - name: 安装 Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
@@ -33,9 +48,25 @@ jobs:
       - name: 编译 debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: 上传 APK
+      - name: 上传 APK（每次构建都能在 Actions 里下载）
         uses: actions/upload-artifact@v4
         with:
           name: VolumeSwipe-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # 只在你推 tag（如 v2.1）时执行：把 APK 直接挂到 GitHub Release 上
+      - name: 挂到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/debug/app-debug.apk
+          name: 手机助手 ${{ github.ref_name }}
+          body: |
+            手机助手（volumeswipe）语音命令版 APK。
+
+            安装：下载下面的 `app-debug.apk` 传到手机，允许「未知来源」安装即可。
+            装好后打开 App，按界面 ①②③④ 顺序开权限，然后说「嗨小白」或直接说命令。
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
