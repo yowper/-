@@ -156,14 +156,10 @@ public final class Commands {
             return CMD_EXIT;
         }
 
-        // 唤醒词本身绝不能被当成命令！
-        // 之前「嗨小白」里的「小」命中了下面的单字兑底（音量小），
-        // 结果：说唤醒词不但不唤醒，还把音量一路压到 0（用户看到的就是“被静音了”）。
-        // 所以先把唤醒词从句子里削掉，再拿剩下的部分去匹配：
-        //   「嗨小白」      → 空 → CMD_NONE（交给上层当唤醒）
-        //   「嗨小白下一集」→ 「下一集」 → CMD_NEXT
-        t = stripWake(t);
-        if (t.length() == 0) {
+        // 唤醒词不与命令组合（用户要求）：
+        // 只要句子里有唤醒词，就当成【纯唤醒】——后面的“下一集”之类一律不当命令。
+        // （命令要单独说：先说「嗨小白」，等框/键盘出来再说「下一集」）
+        if (containsWakeWord(t)) {
             return CMD_NONE;
         }
 
@@ -261,11 +257,14 @@ public final class Commands {
         return false;
     }
 
-    /** 把唤醒词从句子里削掉（“嗨小白下一集” → “下一集”） */
-    private static String stripWake(String t) {
+    /** 这句话里有没有唤醒词（唤醒词不允许和命令组合） */
+    public static boolean containsWakeWord(String text) {
+        String t = normalize(text);
         for (String w : WakeEngine.WAKES) {
-            t = t.replace(w, "");
+            if (t.contains(w)) {
+                return true;
+            }
         }
-        return t;
+        return false;
     }
 }

@@ -273,16 +273,13 @@ public class AutoService extends AccessibilityService {
                     executeCommand(Commands.CMD_EXIT, t);
                     return;
                 }
-                String cmdText = stripWake(t);
-                if (cmdText.length() == 0) {
-                    // 单独说「嗨小白」/「小白」：什么都不做！
-                    // （用户定稿：唤醒时不静音、不点屏幕。这里以前会去点 (50%,20%)，
-                    //   结果免豆包模式下说唤醒词变成了暂停/播放，已删除。）
-                    if (containsWake(t)) {
-                        KeepService.note("听到唤醒词「" + t + "」：免豆包模式直接听命令，唤醒词本身不做任何动作");
-                    }
+                if (containsWake(t)) {
+                    // 用户要求：唤醒词既不执行任何动作，也不和命令组合。
+                    // 所以「嗨小白」「小白广告」「嗨小白下一集」这类一律不当命令。
+                    KeepService.note("听到唤醒词「" + t + "」：免豆包模式直接听命令，唤醒词本身不做动作");
                     return;
                 }
+                String cmdText = t;
                 long now = System.currentTimeMillis();
                 // 1.2 秒内不连发任何命令（识别抖动：中间结果和最终结果常不一样）
                 if (now - lastLocalAt < 1200) {
@@ -321,10 +318,10 @@ public class AutoService extends AccessibilityService {
                 executeCommand(Commands.CMD_EXIT, t);
                 return;
             }
-            String cmdText = stripWake(t);
-            if (cmdText.length() == 0) {
-                return; // 只是把唤醒词又说了一遍
+            if (containsWake(t)) {
+                return; // 又把唤醒词说了一遍（唤醒词不与命令组合）
             }
+            String cmdText = t;
             if (useDoubao()) {
                 // 用豆包时，唤醒之后不再用本地语音听命令：这里只记一笔，不改框
                 KeepService.note("(本地语音包已让位给豆包，忽略：" + cmdText + ")");
@@ -348,10 +345,11 @@ public class AutoService extends AccessibilityService {
                 executeCommand(Commands.CMD_EXIT, t);
                 return;
             }
-            String cmdText = stripWake(t);
-            if (cmdText.length() > 0) {
-                KeepService.note("(豆包阶段本地不接命令，已忽略：" + cmdText + ")");
+            if (containsWake(t)) {
+                KeepService.note("(豆包阶段又听到唤醒词，已忽略：" + t + ")");
+                return;
             }
+            KeepService.note("(豆包阶段本地不接命令，已忽略：" + t + ")");
         }
     }
 
@@ -375,14 +373,6 @@ public class AutoService extends AccessibilityService {
             }
         }
         return false;
-    }
-
-    private String stripWake(String t) {
-        String s = Commands.normalize(t);
-        for (String w : WakeEngine.WAKES) {
-            s = s.replace(w, "");
-        }
-        return s;
     }
 
     // ==================== 状态流转 ====================
