@@ -1388,6 +1388,9 @@ public class AutoService extends AccessibilityService {
         if (skipWatching) {
             return;
         }
+        // 用户要求：直播左划之后的动作【和广告完全一样】——
+        // 所以左划完成后就直接走 startSkipSequence，和「退出广告」是同一条代码路径：
+        // 先截图 → 点 (50%,20%) 暂停 → 读下方读秒 → 上拉前再截图确认无秒 → 只上拉一次。
         postStatus(tag + "：先左划，再看读秒");
         runAfterResume(new Runnable() {
             @Override
@@ -1396,6 +1399,8 @@ public class AutoService extends AccessibilityService {
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
+                        postStatus(tag + "：左划完成 → 接下来和「退出广告」完全一样"
+                                + "（截图 → 点 (50%,20%) 暂停 → 读秒 → 上拉前再截图确认无秒 → 只上拉一次）");
                         startSkipSequence(tag);
                     }
                 }, 1200);
