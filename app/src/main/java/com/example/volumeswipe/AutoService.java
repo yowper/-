@@ -349,11 +349,8 @@ public class AutoService extends AccessibilityService {
         handler.postDelayed(volDropExpiryTask, delay);
     }
 
-    /** 恰好两下：发上拉（下一集）+ 音量还原（等于音量大一点按两次） */
+    /** 短剧模式、恰好两下：发上拉（下一集）+ 音量还原到下调前（等于音量大一点按两次） */
     private void fireVolPull(final int restore) {
-        if (!shortDramaOn()) {
-            return; // 用户要求：只在短剧模式起作用
-        }
         if (!isIdle()) {
             KeepService.note("耳机音量下调两次忽略了：正在识别一轮命令");
             return;
@@ -386,11 +383,45 @@ public class AutoService extends AccessibilityService {
         });
     }
 
+    /** 非短剧模式、按一下就触发：发下页命令（翻书）+ 音量上键补一次（用户要求） */
+    private void fireVolPageOnce() {
+        if (!isIdle()) {
+            return; // 正在识别一轮命令时不折腾
+        }
+        KeepService.note("蓝牙耳机音量下调了一下 → 下页（翻书），音量上键补一次");
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                    if (am != null) {
+                        // 音量上键发出一次，把这一下调的补回去
+                        int before2 = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                        am.adjustStreamVolume(AudioManager.STREAM_MUSIC,
+                                AudioManager.ADJUST_RAISE, 0);
+                        KeepService.note("已发一次音量上键：" + before2 + " → "
+                                + am.getStreamVolume(AudioManager.STREAM_MUSIC));
+                    }
+                } catch (Throwable t2) {
+                    KeepService.note("音量补一次失败：" + t2.getClass().getSimpleName());
+                }
+                if (executeCommand(Commands.CMD_PAGE_DOWN, "耳机音量下调一次")) {
+                    toastResult(Commands.CMD_PAGE_DOWN, "耳机下调音量：下一页（翻书）");
+                }
+            }
+        });
+    }
+
     /** 检测到一次音量下调（before = 下调前的音量） */
     private void onVolumeDropped(int before) {
         // 静音期间的下调是我们自己/系统做的（广告流程禁音），不计数
         if (getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("soundMuted", false)) {
             resetVolDropState();
+            return;
+        }
+        // 非短剧模式：一下就直接发下页命令 + 音量上键补一次（用户要求：拿来翻书的）
+        if (!shortDramaOn()) {
+            fireVolPageOnce();
             return;
         }
         long now = System.currentTimeMillis();
