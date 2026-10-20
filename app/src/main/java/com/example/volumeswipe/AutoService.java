@@ -149,7 +149,6 @@ public class AutoService extends AccessibilityService {
     private long lastLocalAt = 0;
     private int lastLocalCmd = 0;            // 上一次执行的命令（反向抑制用）
     private long lastLocalCmdAt = 0;
-    private boolean pausedByUs = false;
     /** 刚执行过的命令（防重复/防反向误听，见 executeCommand 开头） */
     private int lastExecCmd = 0;
     private long lastExecAt = 0;
@@ -245,10 +244,11 @@ public class AutoService extends AccessibilityService {
     }
 
     // ==================== 手机音量下键双击 ====================
-    // 用户要求：连着两下【音量下键】= 上拉（上滑 = 下一集），
+    // 用户要求：连着两下【音量下键】= 分模式动作：
+    //   短剧模式 = 下集（上拉）；非短剧模式 = 下一页（点 85%,85%，翻书）。
     // 同时自动恢复音量（等于自动按了两下音量上键，把两下降的补回去）。
     // 蓝牙耳机的音量键手机收不到（在耳机本地调音量），所以耳机上双击只会变音量、不会触发。
-    // 做法：第一下放行（音量正常降）、记住当时的音量；第二下吞掉 + 触发上拉 + 恢复音量。
+    // 做法：第一下放行（音量正常降）、记住当时的音量；第二下吞掉 + 触发动作 + 恢复音量。
     // 两下的最大间隔可以在 ⚙ 参数设置里改（毫秒），改了自动记住；默认 1500。
 
     private long lastVolKeyAt = 0;
@@ -310,14 +310,17 @@ public class AutoService extends AccessibilityService {
         }
     }
 
-    /** 手机音量下键连按两下 = 上拉（下一集）+ 自动恢复音量（等于自动按两下音量上键） */
+    /** 手机音量下键连按两下 = 分模式动作 + 自动恢复音量（等于自动按两下音量上键）：
+     *  短剧模式 = 下集（上拉）；非短剧模式 = 下一页（点 85%,85%，翻书） */
     private void onDoubleVolumeDown() {
         try {
             if (!isIdle()) {
                 KeepService.note("音量下键两下忽略了：正在识别一轮命令");
                 return;
             }
-            KeepService.note("手机音量下键按了两下 → 上拉（下一集），音量自动恢复");
+            boolean drama = shortDramaOn();
+            KeepService.note("手机音量下键按了两下 → "
+                    + (drama ? "上拉（下一集）" : "下一页（翻书）") + "，音量自动恢复");
             // 自动恢复音量（用户要求：等于自动按两下音量上键，把降掉的补回去）
             if (volBeforeDoubleDown > 0) {
                 try {
@@ -338,9 +341,15 @@ public class AutoService extends AccessibilityService {
                 }
                 volBeforeDoubleDown = -1;
             }
-            // 上拉（下一集）：只滑一次的锁、防重都照常生效
-            if (executeCommand(Commands.CMD_NEXT, "音量下键两下")) {
-                toastResult(Commands.CMD_NEXT, "音量下键两下：上拉（下一集）");
+            // 分模式：短剧 = 上拉（下一集）；非短剧 = 下一页（翻书）。只滑一次的锁、防重都照常生效
+            if (drama) {
+                if (executeCommand(Commands.CMD_NEXT, "音量下键两下")) {
+                    toastResult(Commands.CMD_NEXT, "音量下键两下：上拉（下一集）");
+                }
+            } else {
+                if (executeCommand(Commands.CMD_PAGE_DOWN, "音量下键两下")) {
+                    toastResult(Commands.CMD_PAGE_DOWN, "音量下键两下：下一页（翻书）");
+                }
             }
         } catch (Throwable t) {
             KeepService.note("音量键双击处理出错：" + t.getClass().getSimpleName());
@@ -632,11 +641,8 @@ public class AutoService extends AccessibilityService {
         armAt = System.currentTimeMillis();
         armedDeadline = armAt + VOSK_WINDOW_MS;
 
-        if (pauseVideo) {
-            // 用户定稿：唤醒时【什么都不做】—— 不静音、不点屏幕。
-            // 这样后面所有命令也都不需要“再点一下恢复播放”，少一个动作就少一堆新问题。
-            pausedByUs = false;
-        }
+        // 用户定稿：唤醒时【什么都不做】—— 不静音、不点屏幕；
+        // (50%,20%) 点击只存在于「停/播放」命令里（用户要求）。
 
         if (useDoubao()) {
             // 直接用豆包识别：本地语音包只在待命时听唤醒词。
@@ -911,11 +917,6 @@ public class AutoService extends AccessibilityService {
             // 已经「小白再见」退出了：不要再把命令条/引擎拉回来
             removeBox();
             return;
-        }
-        // 本轮没执行命令就结束了 → 把暂停的视频恢复回去
-        if (pausedByUs) {
-            pausedByUs = false;
-            tapAt(PAUSE_X, PAUSE_Y);
         }
         if (useDoubao()) {
             showIdleBox();
@@ -2738,10 +2739,6 @@ public class AutoService extends AccessibilityService {
                 phase = PHASE_IDLE;
                 handler.removeCallbacks(tickTask);
                 handler.removeCallbacks(matchTask);
-                if (pausedByUs) {
-                    pausedByUs = false;
-                    tapAt(PAUSE_X, PAUSE_Y);
-                }
                 showIdleBox();
                 KeepService.note("输入框丢了，已复位到待命");
                 if (useDoubao()) {
@@ -3727,9 +3724,8 @@ public class AutoService extends AccessibilityService {
             }
         }
         showStatusStrip("听到「" + text + "」→ " + (cname.length() == 0 ? "命令" : cname));
-        // 用户要求：不管什么命令，第一个动作都是「再点一下 (50%,20%) 让暂停结束」，
-        // 然后才执行命令本身。（继续播放自己就是那一下，不再重复。）
-        // pausedByUs=true 说明是喊「嗨小白」时我们暂停的，那一下才需要解除。
+        // 用户定稿：唤醒时什么都不做（没暂停过任何东西），
+        // 命令直接执行；(50%,20%) 点击只在「停/播放」命令里。
         if (cmd == Commands.CMD_RESUME) {
             executeCommandInner(cmd, text);
             return true;
@@ -3851,7 +3847,6 @@ public class AutoService extends AccessibilityService {
                 startCountdownProbe();
                 break;
             case Commands.CMD_VOL_UP:
-                resumeIfPausedByUs();
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
@@ -3860,7 +3855,6 @@ public class AutoService extends AccessibilityService {
                 }, 600);
                 break;
             case Commands.CMD_VOL_DOWN:
-                resumeIfPausedByUs();
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
@@ -4049,7 +4043,8 @@ public class AutoService extends AccessibilityService {
         }
     }
 
-    /** 屏幕正中那一块（20%~80% 高）的灰度指纹：看视频画面到底动没动 */
+    /** 屏幕正中那一块（20%~80% 高）的灰度指纹（现无调用方，保留备用） */
+    @SuppressWarnings("unused")
     private int[] centerSignature(Bitmap thumb) {
         if (thumb == null || thumb.getWidth() <= 0 || thumb.getHeight() <= 0) {
             return null;
@@ -4076,190 +4071,10 @@ public class AutoService extends AccessibilityService {
         }
     }
 
-    private int resumeVerifyTries = 0;
-    /** 排查时是不是把待命悬浮条临时收起来了（收过就要恢复） */
-    private boolean resumeBoxHidden = false;
-
-    /**
-     * 继续播放的点击尝试（按顺序上）：
-     *   1) (50%,20%)——用户规定的位置；
-     *   2) 还是 (50%,20%)——第一下可能没送到；
-     *   3) 先把我们自己的悬浮条收起来，再点 (50%,20%)
-     *      ——有些 App 只要屏幕上有别的悬浮窗就不认触摸；
-     *   4) 屏幕正中 (50%,50%)——很多播放器那儿就是那个 ▶ 按钮。
-     */
-    private void doResumeTry(final int n) {
-        switch (n) {
-            case 1:
-                tapAt(PAUSE_X, PAUSE_Y);
-                KeepService.note("画面还停着 → 同一位置再点一次 (50%,20%)（第一下可能没送到）");
-                break;
-            case 2:
-                resumeBoxHidden = true;
-                removeBox();
-                KeepService.note("画面还停着 → 先收起悬浮条，再点 (50%,20%)");
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        tapAt(PAUSE_X, PAUSE_Y);
-                    }
-                }, 500);
-                break;
-            case 3:
-                tapAt(50, 50);
-                KeepService.note("画面还停着 → 改点屏幕正中 (50%,50%)（很多播放器那儿就是 ▶）");
-                break;
-            default:
-                KeepService.note("点了 4 下画面还在停：这个 App 可能不认注入的点击，需要手动点一下");
-                restoreIdleBoxIfHidden();
-                return;
-        }
-        handler.postDelayed(resumeVerifyTask, 1300);
-    }
-
-    /** 上面那一步把悬浮条收掉了的话，恢复回来 */
-    private void restoreIdleBoxIfHidden() {
-        if (!resumeBoxHidden) {
-            return;
-        }
-        resumeBoxHidden = false;
-        if (phase == PHASE_IDLE && getSharedPreferences("cfg", MODE_PRIVATE)
-                .getBoolean("enabled", true)) {
-            showIdleBox();
-        }
-    }
-
-    private static final int[][] RESUME_TAPS = {
-            {PAUSE_X, PAUSE_Y}, {PAUSE_X, PAUSE_Y}, {PAUSE_X, PAUSE_Y}, {50, 50}
-    };
-
-    /**
-     * 继续播放：
-     * 1) 先点一下 (50%,20%)（用户规定的暂停/播放位置）；
-     * 2) 过 1 秒截两张图（隔 1.2 秒）看画面动没动：两张一模一样 = 真没播起来；
-     * 3) 确实停着、而且现在没声音 → 再点一下屏幕正中 (50%,50%)：
-     *    很多播放器暂停时中间就是个 ▶ 按钮，用户报“继续播放没反应”就是这么回事。
-     */
-    /**
-     * （旧功能，已不再用了：唤醒时不再暂停视频，所以也没有“恢复播放”这回事。
-     *   停/放/继续/播放 都是 CMD_TOGGLE_PLAY，直接点一下。）
-     */
-    @SuppressWarnings("unused")
-    private void resumePlayback(String why) {
-        boolean wasPaused = pausedByUs;
-        pausedByUs = false;
-        resumeVerifyTries = 0;
-        resumeBoxHidden = false;
-        if (!wasPaused) {
-            // 用户定稿：唤醒时没暂停过任何东西，所以【不做“恢复视频播放”这个动作】——
-            // 现在去点 (50%,20%) 反而会把正在放的视频暂停。
-            KeepService.note(why + "：现在不点屏幕（唤醒时没暂停过视频，点了反而会暂停）");
-            restoreIdleBoxIfHidden();
-            return;
-        }
-        // 用户提示：先让它失去焦点（finishDoubao 里已经 clearFocus + hideIme）
-        // 豆包键盘自己会收掉；确认键盘真的没了，再多等 800ms 才点。
-        // 键盘还在时，外面那一下会被输入法当成“点外面=收键盘”吃掉，视频 App 收不到。
-        whenImeGone(new Runnable() {
-            @Override
-            public void run() {
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        tapAt(PAUSE_X, PAUSE_Y);
-                        // 点完才排队验证（不然键盘拖得久，验证会比点击先跑）
-                        handler.removeCallbacks(resumeVerifyTask);
-                        handler.postDelayed(resumeVerifyTask, 1400);
-                    }
-                }, 800);
-            }
-        });
-        KeepService.note(why + "：等键盘消失后点 (50%,20%)（点击时长 " + tapMsNow() + "ms）");
-    }
-
-    /** 当前设置的点击时长（排查“点下去像长按”的问题） */
-    private int tapMsNow() {
-        return Math.max(80, getSharedPreferences("cfg", MODE_PRIVATE).getInt("tapms", 120));
-    }
-
-    private final Runnable resumeVerifyTask = new Runnable() {
-        @Override
-        public void run() {
-            final int[][] sigA = new int[1][];
-            captureScreenThumb(new BitmapCallback() {
-                @Override
-                public void onBitmap(Bitmap b1, String e1) {
-                    if (b1 == null) {
-                        return;   // 拿不到截图就不折腾（(50%,20%) 那一下已经点过了）
-                    }
-                    sigA[0] = centerSignature(b1);
-                    b1.recycle();
-                    if (sigA[0] == null) {
-                        return;
-                    }
-                    handler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            captureScreenThumb(new BitmapCallback() {
-                                @Override
-                                public void onBitmap(Bitmap b2, String e2) {
-                                    if (b2 == null) {
-                                        return;
-                                    }
-                                    int[] sigB = centerSignature(b2);
-                                    b2.recycle();
-                                    int diff = sigMeanDiff(sigA[0], sigB);
-                                    if (diff > 1) {
-                                        KeepService.note("画面已经在动了 ✓ 继续播放生效");
-                                        restoreIdleBoxIfHidden();
-                                        return;
-                                    }
-                                    if (isAudioPlaying()) {
-                                        KeepService.note("画面没变但声音在响，当它已经在播了");
-                                        restoreIdleBoxIfHidden();
-                                        return;
-                                    }
-                                    if (resumeVerifyTries < RESUME_TAPS.length - 1) {
-                                        resumeVerifyTries++;
-                                        doResumeTry(resumeVerifyTries);
-                                    } else {
-                                        KeepService.note(
-                                                "点了 4 下画面还在停：这个 App 可能不认“注入的点击”，需要手动点一下");
-                                        restoreIdleBoxIfHidden();
-                                    }
-                                }
-                            });
-                        }
-                    }, 1200);   // 系统规定两次截屏至少隔 1 秒
-                }
-            });
-        }
-    };
-
-    /** 唤醒时把视频暂停了：命令执行完再点一下 (50%,20%) 恢复播放（音量命令也要） */
-    private void resumeIfPausedByUs() {
-        if (!pausedByUs) {
-            return;
-        }
-        pausedByUs = false;
-        whenImeGone(new Runnable() {
-            @Override
-            public void run() {
-                tapAt(PAUSE_X, PAUSE_Y);
-            }
-        });
-        KeepService.note("已点 (50%,20%)：恢复播放");
-    }
-
-    /** 唤醒时点了暂停的话，先点一下恢复播放，再执行动作 */
+    /** 直接执行命令（用户定稿：唤醒时什么都不做、没暂停过任何东西，
+     *  不需要「先点一下恢复播放」；(50%,20%) 只在「停/播放」命令里） */
     private void runAfterResume(final Runnable action) {
-        if (pausedByUs) {
-            pausedByUs = false;
-            tapAt(PAUSE_X, PAUSE_Y);
-            handler.postDelayed(action, 700);
-        } else {
-            action.run();
-        }
+        action.run();
     }
 
     /** 声音大一点/小一点：直接调媒体音量（不需要无障碍），并把结果写进通知栏 */
@@ -4405,11 +4220,6 @@ public class AutoService extends AccessibilityService {
             KeepService.note("已退出：短剧模式也自动关闭了");
             skipWatching = false;
             swipeChainActive = false;
-            // 唤醒时暂停了视频的话，退出前先恢复播放
-            if (pausedByUs) {
-                pausedByUs = false;
-                tapAt(PAUSE_X, PAUSE_Y);
-            }
             phase = PHASE_IDLE;
             removeBox();
             removePickerMic();
