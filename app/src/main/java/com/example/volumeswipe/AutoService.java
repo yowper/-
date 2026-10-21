@@ -401,6 +401,9 @@ public class AutoService extends AccessibilityService {
                 }
                 if (executeCommand(Commands.CMD_NEXT, "耳机音量下调")) {
                     toastResult(Commands.CMD_NEXT, "耳机下调音量：上拉（下一集）");
+                } else {
+                    KeepService.note("蓝牙上拉被防重/守卫拦住（原因看上一条日志）");
+                    toast("上拉被拦：可能刚滑过一次，原因看日志");
                 }
             }
         });
@@ -1619,6 +1622,8 @@ public class AutoService extends AccessibilityService {
 
     public void swipeUpOnly() {
         if (busy) {
+            // 用户反馈：短剧蓝牙上拉没反应且日志什么都没有 → 静默拦截全改写日志
+            KeepService.note("上滑没发：上一个手势还没做完（busy=" + busyUntil + "）");
             return;
         }
         // 用户要求：上滑/下滑只能一次，不能连滑
@@ -1631,6 +1636,7 @@ public class AutoService extends AccessibilityService {
         lastSwipeAt = nowSw;
         int[] s = screen();
         if (s == null) {
+            KeepService.note("上滑没发：拿不到屏幕尺寸");
             return;
         }
         final int dur = Math.max(80, getSharedPreferences("cfg", MODE_PRIVATE)
@@ -1656,6 +1662,7 @@ public class AutoService extends AccessibilityService {
 
     public void swipeDownOnly() {
         if (busy) {
+            KeepService.note("下滑没发：上一个手势还没做完（busy）");
             return;
         }
         // 用户要求：上滑/下滑只能一次，不能连滑
@@ -1668,6 +1675,7 @@ public class AutoService extends AccessibilityService {
         lastSwipeAt = nowSw;
         int[] s = screen();
         if (s == null) {
+            KeepService.note("下滑没发：拿不到屏幕尺寸");
             return;
         }
         final int dur = Math.max(80, getSharedPreferences("cfg", MODE_PRIVATE)
@@ -1694,10 +1702,12 @@ public class AutoService extends AccessibilityService {
     /** 向左划：从屏幕最右边缘开始往左（退出直播用，必须是边缘手势） */
     public void swipeLeftOnly() {
         if (busy) {
+            KeepService.note("左划没发：上一个手势还没做完（busy）");
             return;
         }
         int[] s = screen();
         if (s == null) {
+            KeepService.note("左划没发：拿不到屏幕尺寸");
             return;
         }
         final int dur = Math.max(80, getSharedPreferences("cfg", MODE_PRIVATE)
