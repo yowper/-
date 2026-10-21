@@ -8,7 +8,7 @@
 |---|---|
 | 应用名 | 手机助手 |
 | 包名 | `com.example.volumeswipe` |
-| 版本 | 2.26（versionCode 46） |
+| 版本 | 2.27（versionCode 47） |
 | 系统 | Android 7.0+（minSdk 24），targetSdk 34 |
 | 架构 | **只含 arm64-v8a**（近几年的手机都是，老 32 位机装不上） |
 | 体积 | 约 56 MB（里面打包了 65 MB 的中文语音识别模型 + 11 MB OCR 引擎） |

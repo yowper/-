@@ -8,8 +8,8 @@ android {
         applicationId "com.example.volumeswipe"
         minSdk 24
         targetSdk 34
-        versionCode 46
-        versionName "2.26"
+        versionCode 47
+        versionName "2.27"
         // 体积：只要手机在用的 arm64-v8a。
         // 不管的话 APK 里会同时装 x86 / x86_64 / armeabi-v7a / mips 四套 native 库，
         // 白白多出 20 多 MB。

@@ -375,7 +375,7 @@ public class AutoService extends AccessibilityService {
     /** 短剧模式、恰好两下：发上拉（下一集）+ 音量还原到下调前（等于音量大一点按两次） */
     private void fireVolPull(final int restore) {
         if (!isIdle()) {
-            KeepService.note("耳机音量下调两次忽略了：正在识别一轮命令");
+            KeepService.note("耳机音量下调忽略了：正在识别一轮命令");
             return;
         }
         KeepService.note("蓝牙耳机音量下调了一下 → 上拉（下一集），音量自动还原");
@@ -399,8 +399,8 @@ public class AutoService extends AccessibilityService {
                 } catch (Throwable t2) {
                     KeepService.note("音量还原失败：" + t2.getClass().getSimpleName());
                 }
-                if (executeCommand(Commands.CMD_NEXT, "耳机音量下调两次")) {
-                    toastResult(Commands.CMD_NEXT, "耳机两下调音量：上拉（下一集）");
+                if (executeCommand(Commands.CMD_NEXT, "耳机音量下调")) {
+                    toastResult(Commands.CMD_NEXT, "耳机下调音量：上拉（下一集）");
                 }
             }
         });
@@ -440,9 +440,24 @@ public class AutoService extends AccessibilityService {
 
     /** 检测到一次音量下调（before = 下调前的音量） */
     private void onVolumeDropped(int before) {
-        // 静音期间的下调是我们自己/系统做的（广告流程禁音），不计数
-        if (getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("soundMuted", false)) {
-            return;
+        boolean muted = getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("soundMuted", false);
+        // 用户反馈：短剧模式按一下没反应且日志什么都没有 → 每次下调都先写一条状态日志，
+        // 是哪个环节拦的一眼就能看出来
+        KeepService.note("音量下调进入处理：阅读=" + (readingOn() ? "开" : "关")
+                + " 短剧=" + (shortDramaOn() ? "开" : "关")
+                + " 静音标记=" + (muted ? "开" : "关")
+                + " 待命=" + (isIdle() ? "是" : "否")
+                + "（下调前音量 " + before + "）");
+        // 静音期间的下调：只有广告读秒流程自己禁的音才忽略；
+        // 用户自己「禁音」后的下调当真实按键处理（不然短剧/阅读永远没反应）
+        if (muted) {
+            if (skipWatching) {
+                KeepService.note("静音标记是广告读秒流程开的 → 这次下调忽略");
+                return;
+            }
+            getSharedPreferences("cfg", MODE_PRIVATE).edit()
+                    .putBoolean("soundMuted", false).apply();
+            KeepService.note("静音标记不是广告流程开的 → 解除，当真实按键处理");
         }
         // 阅读模式：蓝牙音量下键【一下】就翻页 + 音量补回
         if (readingOn()) {
@@ -1462,11 +1477,16 @@ public class AutoService extends AccessibilityService {
     }
 
     private void hideIme() {
+        hideImeFor(boxEdit);
+    }
+
+    /** 收起指定输入框的键盘（hideIme 的通用版：老 hideIme 只认 boxEdit 的 token） */
+    private void hideImeFor(View v) {
         try {
             InputMethodManager imm = (InputMethodManager)
                     getSystemService(Context.INPUT_METHOD_SERVICE);
-            if (imm != null && boxEdit != null) {
-                imm.hideSoftInputFromWindow(boxEdit.getWindowToken(), 0);
+            if (imm != null && v != null) {
+                imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
             }
         } catch (Exception ignored) {
         }
@@ -3665,21 +3685,38 @@ public class AutoService extends AccessibilityService {
         run.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                String t = et.getText().toString();
-                int cmd = resolveCmd(t, true);
-                if (cmd == Commands.CMD_NONE) {
-                    KeepService.note("手动模式：「" + t + "」没认出命令");
-                    toast("没认出命令：" + t);
-                    return;
-                }
-                if (cmd == Commands.CMD_MANUAL) {
-                    toast("已经在手动模式里了");
-                    return;
-                }
-                if (executeCommand(cmd, t)) {
-                    toastResult(cmd, "执行：" + t);
-                    KeepService.note("手动模式执行：" + t);
-                }
+                final String t = et.getText().toString();
+                // 用户反馈：手动输入没反应——whenImeGone 等键盘收起才发动作，
+                // 而老 hideIme() 只认老编辑框的 token，手动框的键盘永远收不掉。
+                // 这里先收掉手动框自己的键盘、去掉焦点，再执行
+                hideImeFor(et);
+                et.clearFocus();
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (manualLayer == null) {
+                            return;
+                        }
+                        int cmd = resolveCmd(t, true);
+                        if (cmd == Commands.CMD_NONE) {
+                            KeepService.note("手动模式：「" + t + "」没认出命令");
+                            toast("没认出命令：" + t);
+                            return;
+                        }
+                        if (cmd == Commands.CMD_MANUAL) {
+                            toast("已经在手动模式里了");
+                            return;
+                        }
+                        if (executeCommand(cmd, t)) {
+                            toastResult(cmd, "执行：" + t);
+                            KeepService.note("手动模式执行：" + t);
+                        } else {
+                            // executeCommand 返 false 时日志里有原因（防重/反向/没在播）
+                            toast("没有执行：原因看日志（可能刚执行过同一条/反向命令）");
+                            KeepService.note("手动模式：「" + t + "」被防重/守卫拦住，没有执行");
+                        }
+                    }
+                }, 400);
             }
         });
         Button close = new Button(this);
