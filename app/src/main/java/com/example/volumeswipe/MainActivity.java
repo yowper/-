@@ -206,6 +206,13 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 KeepService.applyVoiceSetting(MainActivity.this);
+                // 用户反馈：退过一次程序后蓝牙音量键完全没反应且日志什么都没有——
+                // 根因：小白再见会停掉音量轮询，重开 App 时服务不会重新连接，
+                // 轮询就再也没人重启。这里每次回 App 都强制重启一次（幂等，不会重复）
+                AutoService svc = AutoService.get();
+                if (svc != null && sp.getBoolean("enabled", true)) {
+                    svc.startVolPoller();
+                }
             }
         }, 800);
         syncDoubaoCheck();

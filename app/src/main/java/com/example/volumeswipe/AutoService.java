@@ -303,7 +303,7 @@ public class AutoService extends AccessibilityService {
     /** 下调前的媒体音量，触发后还原用它 */
     private int volBeforeBtDrops = -1;
 
-    /** 每 250ms 读一次媒体音量，只在屏幕亮时采（比广播可靠：
+    /** 每 100ms 读一次媒体音量，只在屏幕亮时采（比广播可靠：
      *  部分机型 VOLUME_CHANGED_ACTION 收不到或一次按键发好几条，都会漏/误判） */
     private static final long VOL_POLL_MS = 100;
 
@@ -330,18 +330,23 @@ public class AutoService extends AccessibilityService {
                         lastKnownVol = v;
                         if (v > 0) {
                             volZeroNoted = false;
-                        } else if (btAudioOn(am) && !shortDramaOn() && !volZeroNoted) {
-                            // 音量留在 0 的话，耳机再往下调手机这边根本看不到（就翻不了页了）
+                        } else if (btAudioOn(am) && !volZeroNoted) {
+                            // 音量留在 0 的话，耳机再往下调手机这边根本看不到（就翻不了页/上拉不了）
                             volZeroNoted = true;
-                            KeepService.note("媒体音量在 0：耳机再往下调手机收不到（无法翻页）；"
+                            KeepService.note("媒体音量在 0：耳机再往下调手机收不到（无法触发）；"
                                     + "按一下耳机音量大键抬到 1 以上就恢复了");
                         }
                         if (++volBeat >= 100) { // 100ms × 100 ≈ 10 秒一次心跳
                             volBeat = 0;
-                            if (btAudioOn(am)) {
-                                KeepService.note("音量监视心跳：当前 " + v
-                                        + "（蓝牙已连；按耳机音量小键后这个数应该变）");
-                            }
+                            // 用户反馈：日志里什么都看不到 → 心跳无条件发，
+                            // 轮询死没死、当前什么模式、静音没静音，一眼可见
+                            KeepService.note("音量监视在跑：当前 " + v
+                                    + (btAudioOn(am) ? "（蓝牙已连）" : "（蓝牙未连）")
+                                    + " 阅读=" + (readingOn() ? "开" : "关")
+                                    + " 短剧=" + (shortDramaOn() ? "开" : "关")
+                                    + " 静音=" + (getSharedPreferences("cfg", MODE_PRIVATE)
+                                            .getBoolean("soundMuted", false) ? "开" : "关")
+                                    + "（按耳机音量小键后这个数应该变）");
                         }
                     }
                 }
@@ -351,7 +356,7 @@ public class AutoService extends AccessibilityService {
         }
     };
 
-    private void startVolPoller() {
+    public void startVolPoller() {
         try {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             if (am != null) {
@@ -3679,8 +3684,8 @@ public class AutoService extends AccessibilityService {
         TextView tv = new TextView(this);
         tv.setTextColor(0xFFFFFFFF);
         tv.setTextSize(13f);
-        tv.setText("手动模式：输入命令后点「执行」（白字黑底，看得清）；\n"
-                + "可输：下页 / 广告 / 直播 / 停 / 放 / 大 / 小 / 打开某某 / 自己录的名字…");
+        tv.setText("手动模式：输入命令后点「执行」——会先关掉这个框，马上执行；\n"
+                + "要再输就说一声「手动」再开。可输：下页 / 广告 / 直播 / 停 / 放 / 大 / 小 / 打开某某 / 自己录的名字…");
 
         final EditText et = new EditText(this);
         et.setHint("输入命令，比如：下页");
@@ -3696,25 +3701,17 @@ public class AutoService extends AccessibilityService {
             @Override
             public void onClick(View v) {
                 final String t = et.getText().toString();
-                // 用户反馈：手动输入没反应——whenImeGone 等键盘收起才发动作，
-                // 而老 hideIme() 只认老编辑框的 token，手动框的键盘永远收不掉。
-                // 这里先收掉手动框自己的键盘、去掉焦点，再执行
+                // 用户要求：点「执行」先关掉手动框（键盘随之收起）马上执行命令；
+                // 要再输就说一声「手动」再开
                 hideImeFor(et);
-                et.clearFocus();
+                removeManualBox();
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
-                        if (manualLayer == null) {
-                            return;
-                        }
                         int cmd = resolveCmd(t, true);
                         if (cmd == Commands.CMD_NONE) {
                             KeepService.note("手动模式：「" + t + "」没认出命令");
                             toast("没认出命令：" + t);
-                            return;
-                        }
-                        if (cmd == Commands.CMD_MANUAL) {
-                            toast("已经在手动模式里了");
                             return;
                         }
                         if (executeCommand(cmd, t)) {
@@ -3726,7 +3723,7 @@ public class AutoService extends AccessibilityService {
                             KeepService.note("手动模式：「" + t + "」被防重/守卫拦住，没有执行");
                         }
                     }
-                }, 400);
+                }, 300);
             }
         });
         Button close = new Button(this);
