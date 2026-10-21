@@ -47,6 +47,11 @@ public class KeepService extends Service {
     private final java.util.ArrayDeque<String> notiLog = new java.util.ArrayDeque<>();
     private boolean accLostNoted = false;
     private int micDownTicks = 0;
+    // 看门狗用：现在「应该」在听的词。有些流程把麦克风暂停后忘了恢复
+    //（用户反馈：跑久了本地语音不灵，重进 App 才好）→ 照这个强制拉回来
+    private String[] wantVocab = null;
+    private String wantLabel = null;
+    private int pausedTicks = 0;
 
     /** 看门狗：每 2.5 秒检查悬浮框是否还在，被 ROM 收走就自动补回 */
     private final Runnable watchdog = new Runnable() {
@@ -103,8 +108,26 @@ public class KeepService extends Service {
             }
             return;
         }
-        if (wake.isCapturePaused() || wake.isMicOpen()) {
+        if (wake.isMicOpen()) {
             micDownTicks = 0;
+            pausedTicks = 0;
+            return;
+        }
+        if (wake.isCapturePaused()) {
+            // 采音被暂停：如果这时本来应该在听命令，说明有流程停完忘了恢复
+            //（用户反馈：运行一段时间后本地语音不灵，重进 App 才好）→ 连续 2 拍（约 5 秒）就强制恢复
+            if (wantVocab != null
+                    && (AutoService.get() == null || AutoService.get().isIdle())) {
+                if (++pausedTicks >= 2) {
+                    pausedTicks = 0;
+                    updateNoti("麦克风停着忘了恢复，已自动恢复");
+                    note("麦克风被暂停超过 5 秒且没流程在用 → 自动恢复本地语音");
+                    applyVocab(wantVocab, wantLabel);
+                }
+                return;
+            }
+            micDownTicks = 0;
+            pausedTicks = 0;
             return;
         }
         // 引擎在跑但麦克风句柄丢了：WakeEngine 内部会自愈重试；约 15 秒还没好就重启引擎
@@ -299,6 +322,9 @@ public class KeepService extends Service {
         boolean micFree = (vocab == null);
         boolean on = !micFree
                 && getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("voiceOn", true);
+        // 记住现在应该在听什么（看门狗在麦克风被忘了恢复时用）
+        wantVocab = micFree ? null : vocab;
+        wantLabel = label;
 
         if (!on) {
             if (micFree && wake != null) {

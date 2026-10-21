@@ -126,6 +126,8 @@ public class AutoService extends AccessibilityService {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int phase = PHASE_IDLE;
+    // 状态卡死看门狗用：从非待命开始到现在的时间（超过 2 分钟没在做事就强制回待命）
+    private long nonIdleSince = 0;
     private boolean busy = false;
     /** 上一次上滑/下滑的时间：用户要求一次只能滑一次，不能连滑 */
     private long lastSwipeAt = 0;
@@ -179,6 +181,20 @@ public class AutoService extends AccessibilityService {
         @Override
         public void run() {
             if (phase == PHASE_IDLE) {
+                nonIdleSince = 0;
+                return;
+            }
+            long now = System.currentTimeMillis();
+            if (nonIdleSince == 0) {
+                nonIdleSince = now;
+            } else if (now - nonIdleSince > 120000
+                    && !skipWatching && recLayer == null && namingLayer == null) {
+                // 用户反馈：跑一段时间后本地语音不灵，重进 App 才好。
+                // 八成是状态卡在非待命（麦克风一直让出去）→ 强制复位。
+                KeepService.note("命令状态卡了 2 分钟没结束 → 强制复位到待命，语音重新听");
+                phase = PHASE_IDLE;
+                nonIdleSince = 0;
+                KeepService.applyVoiceSetting(getApplicationContext());
                 return;
             }
             tickOnce();
@@ -264,6 +280,17 @@ public class AutoService extends AccessibilityService {
     }
 
     private int lastKnownVol = -1;
+    // 音量心跳计数（蓝牙连着时约 10 秒报一次当前音量，方便用户看日志排查）
+    private int volBeat = 0;
+
+    /** 蓝牙音频（A2DP）现在是否连着（诊断日志用） */
+    private static boolean btAudioOn(AudioManager am) {
+        try {
+            return am.isBluetoothA2dpOn();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
     /** 两次下调之前（第一次下调时）的媒体音量，触发后还原用它 */
     private int volBeforeBtDrops = -1;
     // 精确「两下」判定状态（机制见 onVolumeDropped 上方注释）
@@ -285,10 +312,23 @@ public class AutoService extends AccessibilityService {
                     AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
                     if (am != null) {
                         int v = am.getStreamVolume(AudioManager.STREAM_MUSIC);
-                        if (lastKnownVol >= 0 && v < lastKnownVol) {
-                            onVolumeDropped(lastKnownVol);
+                        if (lastKnownVol >= 0 && v != lastKnownVol) {
+                            // 用户要求：日志里记下到底收到了什么，方便排查耳机音量键
+                            KeepService.note("音量采样：" + lastKnownVol + " → " + v
+                                    + (v < lastKnownVol ? "（下调）" : "（上调）")
+                                    + (btAudioOn(am) ? "（蓝牙已连）" : "（蓝牙未连）"));
+                            if (v < lastKnownVol) {
+                                onVolumeDropped(lastKnownVol);
+                            }
                         }
                         lastKnownVol = v;
+                        if (++volBeat >= 40) { // 250ms × 40 ≈ 10 秒一次心跳
+                            volBeat = 0;
+                            if (btAudioOn(am)) {
+                                KeepService.note("音量监视心跳：当前 " + v
+                                        + "（蓝牙已连；按耳机音量小键后这个数应该变）");
+                            }
+                        }
                     }
                 }
             } catch (Throwable ignored) {
@@ -3235,66 +3275,21 @@ public class AutoService extends AccessibilityService {
         // 完全透明：不影响你看下面的界面（动作由我们接住后原样转发，真的生效）
         fl.setBackgroundColor(0x00000000);
 
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setBackgroundColor(0xE6000000);
-        col.setPadding(24, 18, 24, 18);
-
+        // 用户反馈：原来的大黑框（带 3 个按钮）挡住屏幕没法录。
+        // 改成只在【屏幕最下方】显示一条小字「录制中」，不要按钮；
+        // 结束 = 再说一次「录制」或「录制结束」→ 弹框起名。
         recHud = new TextView(this);
         recHud.setTextColor(0xFFFFFFFF);
-        recHud.setTextSize(12f);
-        col.addView(recHud, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        Button ok = new Button(this);
-        ok.setText("完成");
-        ok.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                finishRecording();
-            }
-        });
-        Button undo = new Button(this);
-        undo.setText("撤销上一步");
-        undo.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (!recSteps.isEmpty()) {
-                    recSteps.remove(recSteps.size() - 1);
-                    refreshRecHud();
-                }
-            }
-        });
-        Button cancel = new Button(this);
-        cancel.setText("取消");
-        cancel.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                String cn = recName;
-                removeRecLayer();
-                toast("已取消录制「" + cn + "」");
-                KeepService.note("录制「" + cn + "」已取消（没保存）");
-            }
-        });
-        row.addView(ok, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(undo, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(cancel, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        col.addView(row, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-
+        recHud.setTextSize(11f);
+        recHud.setBackgroundColor(0xB3000000);
+        recHud.setPadding(20, 6, 20, 6);
+        recHud.setGravity(Gravity.CENTER);
         FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        clp.topMargin = 60;
-        fl.addView(col, clp);
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        clp.bottomMargin = 40; // 贴屏幕最底下，不挡画面
+        fl.addView(recHud, clp);
 
         fl.setOnTouchListener(new View.OnTouchListener() {
             float dx = 0;
@@ -3465,18 +3460,12 @@ public class AutoService extends AccessibilityService {
                 swp++;
             }
         }
-        String title = recName.length() > 0
-                ? "🔴 录制「" + recName + "」"
-                : "🔴 录制中（还没起名）";
-        recHud.setText(title + "：已记 " + recSteps.size() + " 步（点 " + tap
-                + (swp > 0 ? " / 划 " + swp : "") + "）\n"
-                + "你现在做的每个动作都会【真的执行】（点哪点哪、滑哪滑哪），\n"
-                + "同时被记下来。点错就「撤销上一步」。\n"
-                + "做完说「录制」或「录制结束」→ 弹框起名；也可以点上面的「完成」。\n"
-                + "（不用双击屏幕：有的手机双击=截图）");
+        recHud.setText("🔴 录制中：已记 " + recSteps.size() + " 步"
+                + (recName.length() > 0 ? "（" + recName + "）" : "") + "\n"
+                + "做完说「录制」或「录制结束」→ 弹框起名保存");
     }
 
-    /** 录完了（点「完成」按钮）：存起来 / 弹框起名 */
+    /** 录完了（再听到「录制」）：存起来 / 弹框起名 */
     private void finishRecording() {
         endRecordingAndName();
     }
