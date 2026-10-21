@@ -3241,6 +3241,10 @@ public class AutoService extends AccessibilityService {
 
     private FrameLayout recLayer;
     private TextView recHud;
+    // 转发手势期间把浮层临时设成「不挡触摸」，让动作真正落到下面的应用
+    //（用户反馈：以前浮层一直挡着，只记到第一步、后面的动作也没真执行）
+    private WindowManager.LayoutParams recLp = null;
+    private volatile boolean recPassThrough = false;
     private String recName = "";
     private final java.util.List<int[]> recSteps = new java.util.ArrayList<>();
     private long recLastAt = 0;
@@ -3299,6 +3303,10 @@ public class AutoService extends AccessibilityService {
 
             @Override
             public boolean onTouch(View v, MotionEvent e) {
+                // 转发手势期间浮层已不挡触摸，正常不会收到事件；保险起见直接忽略
+                if (recPassThrough) {
+                    return true;
+                }
                 try {
                     switch (e.getActionMasked()) {
                         case MotionEvent.ACTION_DOWN:
@@ -3313,11 +3321,13 @@ public class AutoService extends AccessibilityService {
                                 moved = true;
                             }
                             return true;
-                        case MotionEvent.ACTION_UP: {
+                        case MotionEvent.ACTION_UP:
+                        case MotionEvent.ACTION_CANCEL: {
+                            // CANCEL 也当一次完整动作记（多半是被转发手势打断的，别丢步）
                             long now = System.currentTimeMillis();
                             long dur = now - downAt;
                             int delay = (int) Math.max(0,
-                                    Math.min(4000, downAt - recLastAt));
+                                    Math.min(8000, downAt - recLastAt));
                             float fx1 = dx;
                             float fy1 = dy;
                             float fx2 = e.getRawX();
@@ -3339,9 +3349,14 @@ public class AutoService extends AccessibilityService {
                             }
                             recLastAt = now;
                             // 用户要求：录制时也要真的点/真的滑
-                            // → 原样转发给系统（浮层把真触摸接住了，得补一个一样的手势下去）
+                            // → 原样转发给系统（浮层在转发期间会临时不挡触摸）
                             forwardNow(fx1, fy1, fx2, fy2, dur, isSwipe);
                             refreshRecHud();
+                            KeepService.note("已记第 " + recSteps.size() + " 步："
+                                    + (isSwipe
+                                            ? "滑 (" + x1 + "," + y1 + ")→(" + x2 + "," + y2 + ") 用时 " + dur + "ms"
+                                            : "点 (" + x2 + "," + y2 + ")")
+                                    + "，距上一步 " + delay + "ms");
                             return true;
                         }
                         default:
@@ -3364,6 +3379,7 @@ public class AutoService extends AccessibilityService {
         wlp.gravity = Gravity.TOP | Gravity.START;
         try {
             wm.addView(fl, wlp);
+            recLp = wlp;
             recLayer = fl;
         } catch (Exception e) {
             recLayer = null;
@@ -3379,6 +3395,8 @@ public class AutoService extends AccessibilityService {
     /** 把刚录到的动作原样转发给系统（真的点/真的滑） */
     private void forwardNow(float x1, float y1, float x2, float y2,
                             long durMs, boolean isSwipe) {
+        // 转发期间让浮层不挡触摸，注入的手势才能真正落到下面的应用上
+        setRecPassThrough(true);
         long d;
         if (isSwipe) {
             d = Math.max(60, Math.min(3000, durMs));
@@ -3416,12 +3434,14 @@ public class AutoService extends AccessibilityService {
                 public void onCompleted(GestureDescription gestureDescription) {
                     recPumping = false;
                     pumpRecQueue();
+                    maybeReleasePassThrough();
                 }
 
                 @Override
                 public void onCancelled(GestureDescription gestureDescription) {
                     recPumping = false;
                     pumpRecQueue();
+                    maybeReleasePassThrough();
                 }
             }, handler);
         } catch (Throwable t) {
@@ -3451,16 +3471,23 @@ public class AutoService extends AccessibilityService {
         if (recHud == null) {
             return;
         }
-        int tap = 0;
-        int swp = 0;
+        int tap = 0, up = 0, down = 0, left = 0, right = 0;
         for (int[] st : recSteps) {
             if (st[0] == RecordedCmds.TYPE_TAP) {
                 tap++;
+            } else if (Math.abs(st[4] - st[2]) >= Math.abs(st[3] - st[1])) {
+                if (st[4] < st[2]) { up++; } else { down++; }
             } else {
-                swp++;
+                if (st[3] < st[1]) { left++; } else { right++; }
             }
         }
-        recHud.setText("🔴 录制中：已记 " + recSteps.size() + " 步"
+        StringBuilder sum = new StringBuilder();
+        if (tap > 0) { sum.append(" 点×").append(tap); }
+        if (up > 0) { sum.append(" 上滑×").append(up); }
+        if (down > 0) { sum.append(" 下滑×").append(down); }
+        if (left > 0) { sum.append(" 左滑×").append(left); }
+        if (right > 0) { sum.append(" 右滑×").append(right); }
+        recHud.setText("🔴 录制中：已记 " + recSteps.size() + " 步" + sum
                 + (recName.length() > 0 ? "（" + recName + "）" : "") + "\n"
                 + "做完说「录制」或「录制结束」→ 弹框起名保存");
     }
@@ -3617,6 +3644,43 @@ public class AutoService extends AccessibilityService {
         namingLayer = null;
     }
 
+    /** 转发手势期间把录制浮层临时设成「不挡触摸」 */
+    private void setRecPassThrough(final boolean on) {
+        if (recPassThrough == on) {
+            return;
+        }
+        recPassThrough = on;
+        try {
+            if (recLayer != null && recLp != null && wm != null) {
+                if (on) {
+                    recLp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                } else {
+                    recLp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                }
+                wm.updateViewLayout(recLayer, recLp);
+            }
+        } catch (Throwable t) {
+            KeepService.note("录制浮层切换触摸模式失败：" + t.getClass().getSimpleName());
+        }
+    }
+
+    /** 队列空了（最后一次转发完）再恢复浮层的触摸，中间留 100ms 缓冲 */
+    private void maybeReleasePassThrough() {
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (recLayer == null) {
+                    return;
+                }
+                if (recQueue.isEmpty() && !recPumping) {
+                    setRecPassThrough(false);
+                } else {
+                    maybeReleasePassThrough();
+                }
+            }
+        }, 100);
+    }
+
     private void removeRecLayer() {
         if (recLayer != null && wm != null) {
             try {
@@ -3624,6 +3688,8 @@ public class AutoService extends AccessibilityService {
             } catch (Exception ignored) {
             }
         }
+        recPassThrough = false;
+        recLp = null;
         recLayer = null;
         recHud = null;
         recQueue.clear();
