@@ -41,7 +41,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:text="蓝牙耳机音量下调识别窗口（毫秒，默认 200，范围 200~5000）：短剧=两下调→上拉+还原音量；非短剧=一下调→下一页+音量补回"
+            android:text="（已停用）之前给短剧「两下判定」用的窗口参数；v2.26 起短剧一下就触发，这个参数不用再改"
             android:textStyle="bold" />
 
         <EditText

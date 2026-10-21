@@ -300,15 +300,8 @@ public class AutoService extends AccessibilityService {
             return false;
         }
     }
-    /** 两次下调之前（第一次下调时）的媒体音量，触发后还原用它 */
+    /** 下调前的媒体音量，触发后还原用它 */
     private int volBeforeBtDrops = -1;
-    // 精确「两下」判定状态（机制见 onVolumeDropped 上方注释）。
-    // v2.25：到期不再依赖 handler 定时任务（别的流程 removeCallbacksAndMessages(null)
-    // 会把它清掉 → 日志说「已记两下」上拉却永远不来）；改成记到期时间戳，
-    // 在 100ms 轮询里直接查，到点就处理；新的一下来时也先检查旧状态过没过期
-    private int volDropCount = 0;
-    private long lastVolDropAt = 0;
-    private long volExpiryAt = 0;
 
     /** 每 250ms 读一次媒体音量，只在屏幕亮时采（比广播可靠：
      *  部分机型 VOLUME_CHANGED_ACTION 收不到或一次按键发好几条，都会漏/误判） */
@@ -335,10 +328,6 @@ public class AutoService extends AccessibilityService {
                             }
                         }
                         lastKnownVol = v;
-                        // 两下判定到期检查放在轮询里做（每 100ms 必查）：不依赖定时任务
-                        if (volDropCount > 0 && System.currentTimeMillis() >= volExpiryAt) {
-                            handleVolExpiry();
-                        }
                         if (v > 0) {
                             volZeroNoted = false;
                         } else if (btAudioOn(am) && !shortDramaOn() && !volZeroNoted) {
@@ -372,37 +361,16 @@ public class AutoService extends AccessibilityService {
         }
         handler.removeCallbacks(volPollTask);
         handler.postDelayed(volPollTask, VOL_POLL_MS);
-        KeepService.note("已在监听音量变化（短剧模式：下调两次=上拉）");
+        KeepService.note("已在监听音量变化（短剧/阅读模式：下调一下=上拉/下页）");
     }
 
     private void stopVolPoller() {
         handler.removeCallbacks(volPollTask);
     }
 
-    // ==================== 精确「两下」判定（用户定稿的机制） ====================
-    // 第 1 下：做标志，开窗口；窗口内没第 2 下 → 取消标志。
-    // 第 2 下：标志+1，先不发，再等一个窗口看有没有第 3 下；没有 → 发上拉 + 音量还原。
-    // 第 3 下（或更多）：撤销标志，不算命令（用户在正常调音量）。
-    // 只有【恰好两下】才触发；一次/三次都不行。
-
-    private void resetVolDropState() {
-        volDropCount = 0;
-        volBeforeBtDrops = -1;
-        lastVolDropAt = 0;
-        volExpiryAt = 0;
-    }
-
-    /** 窗口到期（100ms 轮询兜底查 volExpiryAt）：没等到下一下就复位；恰好两下 → 上拉+还原 */
-    private void handleVolExpiry() {
-        int c = volDropCount;
-        final int restore = volBeforeBtDrops;
-        resetVolDropState();
-        if (c == 2) {
-            fireVolPull(restore);
-        }
-        // c==1：窗口内没等到第 2 下 → 撤销第一次的标志和记录的音量（什么都不做）
-        // c>=3：真调音量，什么都不做
-    }
+    // ==================== 蓝牙音量下键（v2.26 简化） ====================
+    // 用户要求：不再做「两下」判定——短剧模式识别到【一下】就：记音量 → 上拉 → 恢复音量。
+    // 之前那套两下状态机（含窗口参数）整个删掉，免得再出不稳定。
 
     /** 短剧模式、恰好两下：发上拉（下一集）+ 音量还原到下调前（等于音量大一点按两次） */
     private void fireVolPull(final int restore) {
@@ -410,7 +378,7 @@ public class AutoService extends AccessibilityService {
             KeepService.note("耳机音量下调两次忽略了：正在识别一轮命令");
             return;
         }
-        KeepService.note("蓝牙耳机音量下调了恰好两下 → 上拉（下一集），音量自动还原");
+        KeepService.note("蓝牙耳机音量下调了一下 → 上拉（下一集），音量自动还原");
         handler.post(new Runnable() {
             @Override
             public void run() {
@@ -474,47 +442,22 @@ public class AutoService extends AccessibilityService {
     private void onVolumeDropped(int before) {
         // 静音期间的下调是我们自己/系统做的（广告流程禁音），不计数
         if (getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("soundMuted", false)) {
-            resetVolDropState();
             return;
         }
-        // 阅读模式：蓝牙音量下键【一下】就翻页 + 音量补回（用户要求）
+        // 阅读模式：蓝牙音量下键【一下】就翻页 + 音量补回
         if (readingOn()) {
             fireVolPageOnce(before);
             return;
         }
         if (!shortDramaOn()) {
-            // 普通模式只是调音量（用户要求：翻页/上拉只在阅读/短剧模式里）
+            // 普通模式只是调音量
             KeepService.note("耳机音量下调（普通模式只调音量，不开阅读/短剧不触发动作）");
             return;
         }
-        long now = System.currentTimeMillis();
-        long win = volDoubleMs();
-        // 旧状态过期了（超过一个窗口没等到下一下）→ 先恢复原始状态，再当新的一下
-        if (volDropCount > 0 && now - lastVolDropAt > win) {
-            resetVolDropState();
-        }
-        if (volDropCount == 0) {
-            // 第 1 下：做标志 + 记录音量，开窗口
-            volDropCount = 1;
-            volBeforeBtDrops = before;
-            lastVolDropAt = now;
-            volExpiryAt = now + win;
-            KeepService.note("耳机音量下调第 1 下：开 " + win + "ms 窗口等第 2 下（下调前音量 "
-                    + before + "）");
-            return;
-        }
-        if (volDropCount == 1) {
-            // 第 2 下：不记录音量，记下两下，再开一个窗口等第 3 下
-            volDropCount = 2;
-            lastVolDropAt = now;
-            volExpiryAt = now + win;
-            KeepService.note("已记两下：再等 " + win + "ms，没有第 3 下就上拉+还原音量（"
-                    + volBeforeBtDrops + "）");
-            return;
-        }
-        // 第 3 下（及以后）：撤销标志和记录的音量，不做任何动作 = 真正调低音量
-        KeepService.note("耳机音量下调了第 3 下 → 撤销标志和记录的音量，只是调音量");
-        resetVolDropState();
+        // 短剧模式（用户要求 v2.26）：【一下】就触发：记音量 → 上拉 → 恢复音量
+        KeepService.note("蓝牙耳机音量下调了一下 → 上拉（下一集），音量自动还原（下调前 "
+                + before + "）");
+        fireVolPull(before);
     }
 
     @Override
@@ -523,6 +466,7 @@ public class AutoService extends AccessibilityService {
         stopVolPoller();
         removeStatusStripNow();
         removeRecLayer();
+        removeManualBox();
         removeNamingLayer();
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
@@ -720,6 +664,7 @@ public class AutoService extends AccessibilityService {
                 || cmd == Commands.CMD_SOUND_OFF || cmd == Commands.CMD_SOUND_ON
                 || cmd == Commands.CMD_RECORD_TOGGLE
                 || cmd == Commands.CMD_TOGGLE_PLAY || cmd == Commands.CMD_RESUME
+                || cmd == Commands.CMD_MANUAL
                 || cmd == Commands.CMD_EXIT;
     }
 
@@ -3677,6 +3622,131 @@ public class AutoService extends AccessibilityService {
         return "阅读";
     }
 
+    // 手动模式的命令输入框（喊「手动」弹出；✕ 关闭）
+    private LinearLayout manualLayer;
+
+    /** 手动模式：喊「手动」弹出一个能打字的命令框（黑底白字，点「执行」才执行）。
+     *  用户要求：有些命令语音认不出/来不及说，就在这里手动输；
+     *  短剧模式和普通模式都能喊，阅读模式里被白名单挡住。 */
+    private void showManualBox() {
+        if (wm == null) {
+            wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        }
+        if (wm == null) {
+            toast("悬浮窗还没准备好：请先点 ② 授予悬浮窗权限");
+            return;
+        }
+        if (manualLayer != null) {
+            removeManualBox();
+            toast("手动模式已关");
+            return;
+        }
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setBackgroundColor(0xF2000000);
+        col.setPadding(30, 26, 30, 22);
+
+        TextView tv = new TextView(this);
+        tv.setTextColor(0xFFFFFFFF);
+        tv.setTextSize(13f);
+        tv.setText("手动模式：输入命令后点「执行」（白字黑底，看得清）；\n"
+                + "可输：下页 / 广告 / 直播 / 停 / 放 / 大 / 小 / 打开某某 / 自己录的名字…");
+
+        final EditText et = new EditText(this);
+        et.setHint("输入命令，比如：下页");
+        et.setTextColor(0xFFFFFFFF);
+        et.setHintTextColor(0xFFAAAAAA);
+        et.setBackgroundColor(0x00000000);
+        et.setTextSize(14f);
+        et.setSingleLine(true);
+
+        Button run = new Button(this);
+        run.setText("执行");
+        run.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String t = et.getText().toString();
+                int cmd = resolveCmd(t, true);
+                if (cmd == Commands.CMD_NONE) {
+                    KeepService.note("手动模式：「" + t + "」没认出命令");
+                    toast("没认出命令：" + t);
+                    return;
+                }
+                if (cmd == Commands.CMD_MANUAL) {
+                    toast("已经在手动模式里了");
+                    return;
+                }
+                if (executeCommand(cmd, t)) {
+                    toastResult(cmd, "执行：" + t);
+                    KeepService.note("手动模式执行：" + t);
+                }
+            }
+        });
+        Button close = new Button(this);
+        close.setText("✕ 关闭");
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                removeManualBox();
+                KeepService.note("手动模式已关闭");
+            }
+        });
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.addView(run, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(close, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        col.addView(tv, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        col.addView(et, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        col.addView(row, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // 不加 FLAG_NOT_FOCUSABLE：要弹键盘输入
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                winType(),
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE;
+        try {
+            wm.addView(col, lp);
+            manualLayer = col;
+            KeepService.note("手动模式已开：输入命令点「执行」，✕ 关闭");
+        } catch (Exception e) {
+            manualLayer = null;
+            toast("手动框加不上（悬浮窗权限？）");
+            return;
+        }
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (manualLayer == null) {
+                    return;
+                }
+                et.requestFocus();
+            }
+        }, 200);
+    }
+
+    private void removeManualBox() {
+        if (manualLayer != null && wm != null) {
+            try {
+                wm.removeView(manualLayer);
+            } catch (Exception ignored) {
+            }
+        }
+        manualLayer = null;
+    }
+
     private void showNamingDialog(final java.util.List<int[]> steps) {
         if (wm == null) {
             wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
@@ -4163,6 +4233,11 @@ public class AutoService extends AccessibilityService {
                 // 录制模式：听到自己录的那个名字 → 自动把当时录的动作重放一遍
                 replayRecorded(text);
                 break;
+            case Commands.CMD_MANUAL:
+                // 「手动」= 弹出可输入的命令框（用户要求：语音认不出的/来不及说的，
+                // 手动输进去点「执行」就行；短剧和普通模式可用，阅读模式里被过滤）
+                showManualBox();
+                break;
             case Commands.CMD_READING_TOGGLE:
                 // 「阅读」= 开关阅读模式（开：自动打开阅读软件 + 点一次 50%,20%）
                 toggleReading();
@@ -4513,6 +4588,7 @@ public class AutoService extends AccessibilityService {
             removePickerMic();
             removeRecLayer();
             removeNamingLayer();
+            removeManualBox();
             removeStatusStripNow();
             hideProbePanel();
             handler.removeCallbacksAndMessages(null);

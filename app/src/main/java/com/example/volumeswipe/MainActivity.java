@@ -322,8 +322,10 @@ public class MainActivity extends Activity {
             ren.setOnClickListener(v -> {
                 final EditText input = new EditText(MainActivity.this);
                 input.setText(n);
+                // 用户反馈：默认浅底配白字看不见 → 黑底白字，肯定看得清
                 input.setTextColor(0xFFFFFFFF);
                 input.setHintTextColor(0xFFAAAAAA);
+                input.setBackgroundColor(0xFF222222);
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("改命令名：「" + n + "」")
                         .setView(input)

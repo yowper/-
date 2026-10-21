@@ -33,6 +33,7 @@ public final class Commands {
     public static final int CMD_SOUND_OFF = 22;     // 「禁音」：关掉声音（接电话前用）
     public static final int CMD_SOUND_ON = 23;      // 「声音」：恢复刚才的音量
     public static final int CMD_READING_TOGGLE = 24; // 「阅读」：开关阅读模式
+    public static final int CMD_MANUAL = 25;         // 「手动」：弹出命令输入框
 
     private static final String[] KW_EXIT = {
             "小白再见", "再见小白", "小白拜拜"
@@ -110,6 +111,10 @@ public final class Commands {
     private static final String[] KW_READING = {
             "阅读", "阅读模式", "月读"
     };
+    /** 手动模式：弹出可输入的命令框（语音认不出/来不及说的就在这里输） */
+    private static final String[] KW_MANUAL = {
+            "手动", "手动模式"
+    };
     /** 禁音：关掉声音（接电话前用）。放在 音量大/小 之后判，避免抢走「声音大」 */
     private static final String[] KW_SOUND_OFF = {
             "禁音", "静音", "关声音", "关闭声音", "没声音", "声音关掉"
@@ -130,7 +135,7 @@ public final class Commands {
                 KW_PREV, KW_NEXT, KW_VOL_UP, KW_VOL_DOWN,
                 KW_BRIGHT_UP, KW_BRIGHT_DOWN,
                 KW_DOUBAO_ON, KW_DOUBAO_OFF, KW_TEST_SECONDS, KW_TOGGLE_PLAY, KW_DRAMA,
-                KW_RECORD, KW_SOUND_OFF, KW_SOUND_ON, KW_READING
+                KW_RECORD, KW_SOUND_OFF, KW_SOUND_ON, KW_READING, KW_MANUAL
         };
         for (String[] arr : all) {
             for (String k : arr) {
@@ -225,6 +230,10 @@ public final class Commands {
         if ((t.contains("阅读") || t.contains("月读"))
                 && !t.contains("打开") && !t.contains("启动")) {
             return CMD_READING_TOGGLE;
+        }
+        // 7) 「手动」= 弹出命令输入框（黑底白字，输入后点「执行」才执行，✕ 关闭）
+        if (t.contains("手动")) {
+            return CMD_MANUAL;
         }
         // 6) 「录制」= 开始录制动作（录制中再说一次 = 结束并弹框起名）
         if (t.contains("录制")) {
@@ -378,6 +387,8 @@ public final class Commands {
                 return "切换豆包";
             case CMD_READING_TOGGLE:
                 return "阅读模式开关";
+            case CMD_MANUAL:
+                return "手动模式（弹命令输入框）";
             case CMD_TEST_SECONDS:
                 return "测试读秒";
             case CMD_BRIGHT_UP:
