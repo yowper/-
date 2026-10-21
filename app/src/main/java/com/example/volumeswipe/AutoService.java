@@ -232,6 +232,13 @@ public class AutoService extends AccessibilityService {
         super.onServiceConnected();
         sInstance = this;
         phase = PHASE_IDLE;
+        // 已退出（enabled=false）时被系统重新连上：不要拉起待命编辑框，
+        // 保持「无障碍开关不动 + 屏幕干净」（用户要求：退出后待命编辑框要退）
+        if (!getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("enabled", true)) {
+            removeBox();
+            removeStatusStripNow();
+            return;
+        }
         // 用户要求：软件开的时候，豆包模式、短剧模式都是【关】的
         try {
             getSharedPreferences("cfg", MODE_PRIVATE).edit()
@@ -295,9 +302,13 @@ public class AutoService extends AccessibilityService {
     }
     /** 两次下调之前（第一次下调时）的媒体音量，触发后还原用它 */
     private int volBeforeBtDrops = -1;
-    // 精确「两下」判定状态（机制见 onVolumeDropped 上方注释）
+    // 精确「两下」判定状态（机制见 onVolumeDropped 上方注释）。
+    // v2.25：到期不再依赖 handler 定时任务（别的流程 removeCallbacksAndMessages(null)
+    // 会把它清掉 → 日志说「已记两下」上拉却永远不来）；改成记到期时间戳，
+    // 在 100ms 轮询里直接查，到点就处理；新的一下来时也先检查旧状态过没过期
     private int volDropCount = 0;
-    private Runnable volDropExpiryTask = null;
+    private long lastVolDropAt = 0;
+    private long volExpiryAt = 0;
 
     /** 每 250ms 读一次媒体音量，只在屏幕亮时采（比广播可靠：
      *  部分机型 VOLUME_CHANGED_ACTION 收不到或一次按键发好几条，都会漏/误判） */
@@ -324,6 +335,10 @@ public class AutoService extends AccessibilityService {
                             }
                         }
                         lastKnownVol = v;
+                        // 两下判定到期检查放在轮询里做（每 100ms 必查）：不依赖定时任务
+                        if (volDropCount > 0 && System.currentTimeMillis() >= volExpiryAt) {
+                            handleVolExpiry();
+                        }
                         if (v > 0) {
                             volZeroNoted = false;
                         } else if (btAudioOn(am) && !shortDramaOn() && !volZeroNoted) {
@@ -373,30 +388,20 @@ public class AutoService extends AccessibilityService {
     private void resetVolDropState() {
         volDropCount = 0;
         volBeforeBtDrops = -1;
-        if (volDropExpiryTask != null) {
-            handler.removeCallbacks(volDropExpiryTask);
-            volDropExpiryTask = null;
-        }
+        lastVolDropAt = 0;
+        volExpiryAt = 0;
     }
 
-    /** 窗口到期：只有恰好两下才发上拉；其他情况复位 */
-    private void scheduleVolExpiry(long at) {
-        if (volDropExpiryTask != null) {
-            handler.removeCallbacks(volDropExpiryTask);
+    /** 窗口到期（100ms 轮询兜底查 volExpiryAt）：没等到下一下就复位；恰好两下 → 上拉+还原 */
+    private void handleVolExpiry() {
+        int c = volDropCount;
+        final int restore = volBeforeBtDrops;
+        resetVolDropState();
+        if (c == 2) {
+            fireVolPull(restore);
         }
-        final long delay = Math.max(50, at - System.currentTimeMillis());
-        volDropExpiryTask = new Runnable() {
-            @Override
-            public void run() {
-                int c = volDropCount;
-                final int restore = volBeforeBtDrops;
-                resetVolDropState();
-                if (c == 2) {
-                    fireVolPull(restore);
-                }
-            }
-        };
-        handler.postDelayed(volDropExpiryTask, delay);
+        // c==1：窗口内没等到第 2 下 → 撤销第一次的标志和记录的音量（什么都不做）
+        // c>=3：真调音量，什么都不做
     }
 
     /** 短剧模式、恰好两下：发上拉（下一集）+ 音量还原到下调前（等于音量大一点按两次） */
@@ -472,34 +477,44 @@ public class AutoService extends AccessibilityService {
             resetVolDropState();
             return;
         }
-        // 非短剧模式：一下就直接发下页命令 + 音量补回（用户要求：拿来翻书的）
-        if (!shortDramaOn()) {
+        // 阅读模式：蓝牙音量下键【一下】就翻页 + 音量补回（用户要求）
+        if (readingOn()) {
             fireVolPageOnce(before);
             return;
         }
+        if (!shortDramaOn()) {
+            // 普通模式只是调音量（用户要求：翻页/上拉只在阅读/短剧模式里）
+            KeepService.note("耳机音量下调（普通模式只调音量，不开阅读/短剧不触发动作）");
+            return;
+        }
         long now = System.currentTimeMillis();
+        long win = volDoubleMs();
+        // 旧状态过期了（超过一个窗口没等到下一下）→ 先恢复原始状态，再当新的一下
+        if (volDropCount > 0 && now - lastVolDropAt > win) {
+            resetVolDropState();
+        }
         if (volDropCount == 0) {
-            // 第 1 下：做标志，开窗口
+            // 第 1 下：做标志 + 记录音量，开窗口
             volDropCount = 1;
             volBeforeBtDrops = before;
-            scheduleVolExpiry(now + volDoubleMs());
+            lastVolDropAt = now;
+            volExpiryAt = now + win;
+            KeepService.note("耳机音量下调第 1 下：开 " + win + "ms 窗口等第 2 下（下调前音量 "
+                    + before + "）");
             return;
         }
         if (volDropCount == 1) {
-            // 第 2 下：标志+1，先不发，再等一个窗口看有没有第 3 下
+            // 第 2 下：不记录音量，记下两下，再开一个窗口等第 3 下
             volDropCount = 2;
-            scheduleVolExpiry(now + volDoubleMs());
+            lastVolDropAt = now;
+            volExpiryAt = now + win;
+            KeepService.note("已记两下：再等 " + win + "ms，没有第 3 下就上拉+还原音量（"
+                    + volBeforeBtDrops + "）");
             return;
         }
-        if (volDropCount == 2) {
-            // 第 3 下：撤销标志，不算命令（用户在正常调音量，音量保持调小的状态）
-            KeepService.note("耳机音量下调了三下 → 只是在调音量，不触发上拉");
-            volDropCount = 3;
-            scheduleVolExpiry(now + volDoubleMs()); // 静默一个窗口后复位
-            return;
-        }
-        // 4 下及以后：继续当调音量，刷新静默到期
-        scheduleVolExpiry(now + volDoubleMs());
+        // 第 3 下（及以后）：撤销标志和记录的音量，不做任何动作 = 真正调低音量
+        KeepService.note("耳机音量下调了第 3 下 → 撤销标志和记录的音量，只是调音量");
+        resetVolDropState();
     }
 
     @Override
@@ -708,6 +723,17 @@ public class AutoService extends AccessibilityService {
                 || cmd == Commands.CMD_EXIT;
     }
 
+    /** 阅读模式白名单（用户要求）：上页/下页 + 「阅读」开关 + 小白再见（安全阀） */
+    private static boolean isReadingCmd(int cmd) {
+        return cmd == Commands.CMD_PAGE_UP || cmd == Commands.CMD_PAGE_DOWN
+                || cmd == Commands.CMD_READING_TOGGLE || cmd == Commands.CMD_EXIT;
+    }
+
+    /** 阅读模式开关（prefs "reading"，退出自动关） */
+    private boolean readingOn() {
+        return getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("reading", false);
+    }
+
     /**
      * 统一的命令解析（所有语音路径都走这里，不要再直接用 Commands.match）：
      * ① 录制模式：用户自己录的语音命令名（RecordedCmds）→ CMD_RECORDED
@@ -725,9 +751,35 @@ public class AutoService extends AccessibilityService {
         }
         int cmd = Commands.match(t);
         String rec = RecordedCmds.find(this, t);
-        if (rec != null && cmd != Commands.CMD_EXIT) {
-            // 安全阀：录制名字不许把「小白再见」抢走
+        if (rec != null && cmd != Commands.CMD_EXIT && !readingOn()) {
+            // 安全阀：录制名字不许把「小白再见」抢走；阅读模式里录制命令也不听
             return Commands.CMD_RECORDED;
+        }
+        if (readingOn()) {
+            // 用户要求：阅读模式只听 上页/下页 和「阅读」（小白再见保留），
+            // 其他所有命令不收（避免阅读被视频里的语音误触发）
+            if (rec != null) {
+                if (verbose) {
+                    KeepService.note("阅读模式：「" + t + "」不接收（只听 上页/下页/「阅读」/小白再见）");
+                }
+                return Commands.CMD_NONE;
+            }
+            if (cmd != Commands.CMD_NONE && !isReadingCmd(cmd)) {
+                if (verbose) {
+                    KeepService.note("阅读模式：「" + t + "」（" + Commands.nameOf(cmd)
+                            + "）不接收；说「阅读」可退出阅读模式");
+                }
+                return Commands.CMD_NONE;
+            }
+            return cmd;
+        }
+        // 上页/下页只在阅读模式里有效（用户要求：其他模式不执行也不显示）
+        if ((cmd == Commands.CMD_PAGE_UP || cmd == Commands.CMD_PAGE_DOWN)
+                && !shortDramaOn()) {
+            if (verbose) {
+                KeepService.note("「" + t + "」（上页/下页）只在阅读模式里有效；说「阅读」开启");
+            }
+            return Commands.CMD_NONE;
         }
         if (shortDramaOn()) {
             if (cmd != Commands.CMD_NONE && !isDramaCmd(cmd)) {
@@ -3557,6 +3609,74 @@ public class AutoService extends AccessibilityService {
     }
 
     /** 录完弹框起名（悬浮窗，能弹键盘输入） */
+    /** 「阅读」：开关阅读模式。开 = 自动打开阅读软件 + 点一次 (50%,20%)；关 = 只关（用户要求） */
+    private void toggleReading() {
+        boolean on = !readingOn();
+        getSharedPreferences("cfg", MODE_PRIVATE).edit().putBoolean("reading", on).apply();
+        if (!on) {
+            toast("阅读模式已关");
+            KeepService.note("阅读模式已关（上页/下页/蓝牙音量键翻页随之失效）");
+            return;
+        }
+        KeepService.note("阅读模式已开：只听 上页/下页/蓝牙音量键/「阅读」/小白再见；"
+                + "自动打开阅读软件后点一次 (50%,20%)");
+        toast("阅读模式已开");
+        String app = findReadingApp();
+        if (app == null) {
+            toast("没找到阅读软件：先说「打开某某」开一次，以后「阅读」会自动开它");
+            KeepService.note("没找到阅读软件：请用「打开某某」先打开一次（名字会记住）");
+            return;
+        }
+        executeCommand(Commands.CMD_OPEN, "打开" + app);
+        // 打开后自动点一次 (50%,20%)（等应用起来；用户要求）
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!readingOn() || !isIdle()) {
+                    return;
+                }
+                tapAt(50, 20);
+                KeepService.note("阅读模式：已自动点一次 (50%,20%)");
+            }
+        }, 6000);
+    }
+
+    /** 找阅读软件：优先用记住的（readApp），否则搜名字含 阅读/小说/读书 的应用；
+     *  都没有就交给「阅读」这个别名（openAppByName 里按名字找） */
+    private String findReadingApp() {
+        String saved = getSharedPreferences("cfg", MODE_PRIVATE).getString("readApp", "");
+        if (saved.length() > 0) {
+            return saved;
+        }
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            String best = null;
+            for (android.content.pm.PackageInfo pi : pm.getInstalledPackages(0)) {
+                String label;
+                try {
+                    label = String.valueOf(pm.getApplicationLabel(pi.applicationInfo));
+                } catch (Throwable t2) {
+                    continue;
+                }
+                String n = Commands.normalize(label);
+                if (n.contains("阅读") || n.contains("小说") || n.contains("读书")) {
+                    if (best == null || label.length() < best.length()) {
+                        best = label; // 名字最短的通常就是专门的阅读软件
+                    }
+                }
+            }
+            if (best != null) {
+                getSharedPreferences("cfg", MODE_PRIVATE).edit()
+                        .putString("readApp", best).apply();
+                KeepService.note("找到阅读软件「" + best + "」（已记住，⚙ 可换）");
+                return best;
+            }
+        } catch (Throwable t) {
+            // 权限/可见性限制：交给「阅读」别名去找
+        }
+        return "阅读";
+    }
+
     private void showNamingDialog(final java.util.List<int[]> steps) {
         if (wm == null) {
             wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
@@ -3579,6 +3699,9 @@ public class AutoService extends AccessibilityService {
 
         final EditText et = new EditText(this);
         et.setHint("命令名，比如：点赞");
+        // 用户反馈：默认深色文字在黑底弹框上根本看不到 → 白字灰提示
+        et.setTextColor(0xFFFFFFFF);
+        et.setHintTextColor(0xFFAAAAAA);
         et.setTextSize(14f);
         et.setSingleLine(true);
 
@@ -4024,6 +4147,12 @@ public class AutoService extends AccessibilityService {
                 String err = openAppByName(name);
                 if (err == null) {
                     KeepService.note("已打开「" + name + "」✓");
+                    String nn = Commands.normalize(name);
+                    if (nn.contains("阅读") || nn.contains("小说") || nn.contains("读书")) {
+                        getSharedPreferences("cfg", MODE_PRIVATE).edit()
+                                .putString("readApp", name).apply();
+                        KeepService.note("已把「" + name + "」记为阅读软件（「阅读」模式会自动开它）");
+                    }
                 } else {
                     KeepService.note("打开「" + name + "」失败：" + err);
                     toast("打开「" + name + "」失败：" + err);
@@ -4033,6 +4162,10 @@ public class AutoService extends AccessibilityService {
             case Commands.CMD_RECORDED:
                 // 录制模式：听到自己录的那个名字 → 自动把当时录的动作重放一遍
                 replayRecorded(text);
+                break;
+            case Commands.CMD_READING_TOGGLE:
+                // 「阅读」= 开关阅读模式（开：自动打开阅读软件 + 点一次 50%,20%）
+                toggleReading();
                 break;
             case Commands.CMD_DRAMA_TOGGLE: {
                 // 用户要求：「短剧」= 像豆包一样说一声就切换（没开就进、开着就退）
@@ -4370,7 +4503,8 @@ public class AutoService extends AccessibilityService {
             stopVolPoller();
             getSharedPreferences("cfg", MODE_PRIVATE).edit()
                     .putBoolean("enabled", false)
-                    .putBoolean("shortDrama", false).apply(); // 用户要求：退出程序自动关短剧模式
+                    .putBoolean("shortDrama", false)
+                    .putBoolean("reading", false).apply(); // 退出自动关短剧/阅读模式
             KeepService.note("已退出：短剧模式也自动关闭了");
             skipWatching = false;
             swipeChainActive = false;

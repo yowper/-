@@ -32,6 +32,7 @@ public final class Commands {
     public static final int CMD_RECORD_TOGGLE = 21; // 「录制」：开始录制动作（录制中再说=结束并弹框起名）
     public static final int CMD_SOUND_OFF = 22;     // 「禁音」：关掉声音（接电话前用）
     public static final int CMD_SOUND_ON = 23;      // 「声音」：恢复刚才的音量
+    public static final int CMD_READING_TOGGLE = 24; // 「阅读」：开关阅读模式
 
     private static final String[] KW_EXIT = {
             "小白再见", "再见小白", "小白拜拜"
@@ -105,6 +106,10 @@ public final class Commands {
     private static final String[] KW_RECORD = {
             "录制", "开始录制", "录制动作", "录制命令"
     };
+    /** 阅读模式开关：单独说「阅读」= 开/关；含「打开」的句子不当开关（「打开阅读」仍是开 App） */
+    private static final String[] KW_READING = {
+            "阅读", "阅读模式", "月读"
+    };
     /** 禁音：关掉声音（接电话前用）。放在 音量大/小 之后判，避免抢走「声音大」 */
     private static final String[] KW_SOUND_OFF = {
             "禁音", "静音", "关声音", "关闭声音", "没声音", "声音关掉"
@@ -125,7 +130,7 @@ public final class Commands {
                 KW_PREV, KW_NEXT, KW_VOL_UP, KW_VOL_DOWN,
                 KW_BRIGHT_UP, KW_BRIGHT_DOWN,
                 KW_DOUBAO_ON, KW_DOUBAO_OFF, KW_TEST_SECONDS, KW_TOGGLE_PLAY, KW_DRAMA,
-                KW_RECORD, KW_SOUND_OFF, KW_SOUND_ON
+                KW_RECORD, KW_SOUND_OFF, KW_SOUND_ON, KW_READING
         };
         for (String[] arr : all) {
             for (String k : arr) {
@@ -213,6 +218,13 @@ public final class Commands {
         //   （用户要求：像「豆包」一样用语音切换，不用勾选框，也不用「嗨小白」退出）
         if (t.contains("短剧")) {
             return CMD_DRAMA_TOGGLE;
+        }
+        // 6) 「阅读」= 开关阅读模式（v2.25）：开 = 自动开阅读软件+点一次(50%,20%)，
+        //    模式里只听 上页/下页/蓝牙音量键；再说一次「阅读」= 关
+        //    含「打开/启动」的句子不当开关（「打开阅读」仍是打开 App）
+        if ((t.contains("阅读") || t.contains("月读"))
+                && !t.contains("打开") && !t.contains("启动")) {
+            return CMD_READING_TOGGLE;
         }
         // 6) 「录制」= 开始录制动作（录制中再说一次 = 结束并弹框起名）
         if (t.contains("录制")) {
@@ -364,6 +376,8 @@ public final class Commands {
                 return "关闭豆包（去勾）";
             case CMD_DOUBAO_TOGGLE:
                 return "切换豆包";
+            case CMD_READING_TOGGLE:
+                return "阅读模式开关";
             case CMD_TEST_SECONDS:
                 return "测试读秒";
             case CMD_BRIGHT_UP:

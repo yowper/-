@@ -317,6 +317,38 @@ public class MainActivity extends Activity {
                 }
                 showRecordDialog();
             });
+            Button ren = new Button(this);
+            ren.setText("改名");
+            ren.setOnClickListener(v -> {
+                final EditText input = new EditText(MainActivity.this);
+                input.setText(n);
+                input.setTextColor(0xFFFFFFFF);
+                input.setHintTextColor(0xFFAAAAAA);
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("改命令名：「" + n + "」")
+                        .setView(input)
+                        .setPositiveButton("保存", (d, w) -> {
+                            String nn = Commands.normalize(input.getText().toString());
+                            if (nn.length() == 0) {
+                                toast("名字不能为空");
+                                return;
+                            }
+                            RecordedCmds.rename(MainActivity.this, n, nn);
+                            RecordedCmds.reload(MainActivity.this);
+                            AutoService svc = AutoService.get();
+                            if (svc != null) {
+                                svc.refreshVocabNow();
+                            }
+                            toast("已改名：「" + n + "」→「" + nn + "」");
+                            if (holder[0] != null) {
+                                holder[0].dismiss();
+                            }
+                            showRecordDialog();
+                        })
+                        .setNegativeButton("取消", null)
+                        .show();
+            });
+            row.addView(ren);
             row.addView(del);
             col.addView(row);
         }

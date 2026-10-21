@@ -202,6 +202,29 @@ public final class RecordedCmds {
         writeNames(ctx, set.toArray(new String[0]));
     }
 
+    /** 重命名：步骤数据搬到新名字（rec_names 同步替换）；用户要求：名字要能改 */
+    public static void rename(Context ctx, String oldName, String newName) {
+        String o = Commands.normalize(oldName);
+        String n = Commands.normalize(newName);
+        if (o.length() == 0 || n.length() == 0 || o.equals(n)) {
+            return;
+        }
+        SharedPreferences sp = sp(ctx);
+        String data = sp.getString(PREFIX + o, null);
+        if (data == null) {
+            return;
+        }
+        sp.edit().putString(PREFIX + n, data).remove(PREFIX + o).apply();
+        LinkedHashSet<String> set = new LinkedHashSet<>();
+        for (String one : readNames(ctx)) {
+            if (!one.equals(o)) {
+                set.add(one);
+            }
+        }
+        set.add(n);
+        writeNames(ctx, set.toArray(new String[0]));
+    }
+
     /** 一句话描述（列表 / 日志用） */
     public static String describe(Context ctx, String name) {
         List<int[]> steps = steps(ctx, name);
