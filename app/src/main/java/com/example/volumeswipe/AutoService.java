@@ -269,7 +269,7 @@ public class AutoService extends AccessibilityService {
 
     /** 音量下调两次的识别窗口（用户可改、自动记住；默认 1000，限 200~5000） */
     private long volDoubleMs() {
-        int v = getSharedPreferences("cfg", MODE_PRIVATE).getInt("volDoubleMs", 1000);
+        int v = getSharedPreferences("cfg", MODE_PRIVATE).getInt("volDoubleMs", 200);
         if (v < 200) {
             v = 200;
         }
@@ -282,6 +282,8 @@ public class AutoService extends AccessibilityService {
     private int lastKnownVol = -1;
     // 音量心跳计数（蓝牙连着时约 10 秒报一次当前音量，方便用户看日志排查）
     private int volBeat = 0;
+    // 音量在 0 的提示只报一次（0 时耳机再往下调手机收不到）
+    private boolean volZeroNoted = false;
 
     /** 蓝牙音频（A2DP）现在是否连着（诊断日志用） */
     private static boolean btAudioOn(AudioManager am) {
@@ -299,7 +301,7 @@ public class AutoService extends AccessibilityService {
 
     /** 每 250ms 读一次媒体音量，只在屏幕亮时采（比广播可靠：
      *  部分机型 VOLUME_CHANGED_ACTION 收不到或一次按键发好几条，都会漏/误判） */
-    private static final long VOL_POLL_MS = 250;
+    private static final long VOL_POLL_MS = 100;
 
     private final Runnable volPollTask = new Runnable() {
         @Override
@@ -322,7 +324,15 @@ public class AutoService extends AccessibilityService {
                             }
                         }
                         lastKnownVol = v;
-                        if (++volBeat >= 40) { // 250ms × 40 ≈ 10 秒一次心跳
+                        if (v > 0) {
+                            volZeroNoted = false;
+                        } else if (btAudioOn(am) && !shortDramaOn() && !volZeroNoted) {
+                            // 音量留在 0 的话，耳机再往下调手机这边根本看不到（就翻不了页了）
+                            volZeroNoted = true;
+                            KeepService.note("媒体音量在 0：耳机再往下调手机收不到（无法翻页）；"
+                                    + "按一下耳机音量大键抬到 1 以上就恢复了");
+                        }
+                        if (++volBeat >= 100) { // 100ms × 100 ≈ 10 秒一次心跳
                             volBeat = 0;
                             if (btAudioOn(am)) {
                                 KeepService.note("音量监视心跳：当前 " + v
@@ -423,27 +433,30 @@ public class AutoService extends AccessibilityService {
         });
     }
 
-    /** 非短剧模式、按一下就触发：发下页命令（翻书）+ 音量上键补一次（用户要求） */
-    private void fireVolPageOnce() {
+    /** 非短剧模式、按一下就触发：发下页命令（翻书）+ 音量补回下调前（用户要求） */
+    private void fireVolPageOnce(final int restore) {
         if (!isIdle()) {
             return; // 正在识别一轮命令时不折腾
         }
-        KeepService.note("蓝牙耳机音量下调了一下 → 下页（翻书），音量上键补一次");
+        KeepService.note("蓝牙耳机音量下调了一下 → 下页（翻书），音量补回 " + restore);
         handler.post(new Runnable() {
             @Override
             public void run() {
                 try {
                     AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
                     if (am != null) {
-                        // 音量上键发出一次，把这一下调的补回去
-                        int before2 = am.getStreamVolume(AudioManager.STREAM_MUSIC);
-                        am.adjustStreamVolume(AudioManager.STREAM_MUSIC,
-                                AudioManager.ADJUST_RAISE, 0);
-                        KeepService.note("已发一次音量上键：" + before2 + " → "
-                                + am.getStreamVolume(AudioManager.STREAM_MUSIC));
+                        // 补回下调前的音量；至少补到 1：
+                        // 音量留在 0 的话，耳机再往下调手机这边根本看不到（就翻不了页了）
+                        int target = Math.max(restore, 1);
+                        int now2 = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                        if (now2 < target) {
+                            am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0);
+                            KeepService.note("音量已补回：" + now2 + " → "
+                                    + am.getStreamVolume(AudioManager.STREAM_MUSIC));
+                        }
                     }
                 } catch (Throwable t2) {
-                    KeepService.note("音量补一次失败：" + t2.getClass().getSimpleName());
+                    KeepService.note("音量补回失败：" + t2.getClass().getSimpleName());
                 }
                 if (executeCommand(Commands.CMD_PAGE_DOWN, "耳机音量下调一次")) {
                     toastResult(Commands.CMD_PAGE_DOWN, "耳机下调音量：下一页（翻书）");
@@ -459,9 +472,9 @@ public class AutoService extends AccessibilityService {
             resetVolDropState();
             return;
         }
-        // 非短剧模式：一下就直接发下页命令 + 音量上键补一次（用户要求：拿来翻书的）
+        // 非短剧模式：一下就直接发下页命令 + 音量补回（用户要求：拿来翻书的）
         if (!shortDramaOn()) {
-            fireVolPageOnce();
+            fireVolPageOnce(before);
             return;
         }
         long now = System.currentTimeMillis();
@@ -3427,11 +3440,24 @@ public class AutoService extends AccessibilityService {
             return;
         }
         recPumping = true;
+        // 先确保浮层不挡触摸。窗口 flag 改动是异步生效的，立刻发手势
+        // 可能被我们自己的浮层吃掉（应用就没反应）→ 等 120ms 再发
+        setRecPassThrough(true);
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                dispatchRec(g);
+            }
+        }, 120);
+    }
+
+    private void dispatchRec(final GestureDescription g) {
         boolean sent = false;
         try {
             sent = dispatchGesture(g, new GestureResultCallback() {
                 @Override
                 public void onCompleted(GestureDescription gestureDescription) {
+                    KeepService.note("录制转发完成：动作已真正落到应用上");
                     recPumping = false;
                     pumpRecQueue();
                     maybeReleasePassThrough();
@@ -3439,6 +3465,7 @@ public class AutoService extends AccessibilityService {
 
                 @Override
                 public void onCancelled(GestureDescription gestureDescription) {
+                    KeepService.note("录制转发被取消，重新排队");
                     recPumping = false;
                     pumpRecQueue();
                     maybeReleasePassThrough();
@@ -3454,7 +3481,7 @@ public class AutoService extends AccessibilityService {
                 public void run() {
                     pumpRecQueue();
                 }
-            }, 60);
+            }, 120);
         }
     }
 

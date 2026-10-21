@@ -248,7 +248,7 @@ public class MainActivity extends Activity {
                     int micY = clamp(parseInt(etMicY.getText().toString(), 66), 0, 100);
                     int listenSec = clamp(parseInt(etListen.getText().toString(), 3), 3, 20);
                     int micDelayMs = clamp(parseInt(etMicDelay.getText().toString(), 200), 0, 3000);
-                    int volMs = clamp(parseInt(etVolMs.getText().toString(), 1000), 200, 5000);
+                    int volMs = clamp(parseInt(etVolMs.getText().toString(), 200), 200, 5000);
 
                     sp.edit()
                             .putInt("dur", durMs)
@@ -279,16 +279,18 @@ public class MainActivity extends Activity {
         tip.setTextSize(13f);
         tip.setText("用语音说「录制」就能开始（最快）：开始后直接去做动作，\n"
                 + "每个动作都会【真的执行】（点哪点哪、滑哪滑哪，包括上滑/左滑）并被记下来，\n"
-                + "做完【双击屏幕】结束 → 弹出文本框起个命令名 → 保存。\n"
+                + "做完再说一声「录制」或「录制结束」→ 弹出文本框起个命令名 → 保存。\n"
                 + "以后说这个名字，程序就自动重做这串动作（含间隔，每步再加 0.2 秒延时）。\n"
+                + "【管理】下面的列表就是全部录制命令：录得不要了/不满意，\n"
+                + "点右边的「删除」去掉再重录一遍就行。\n"
                 + "短剧模式里自己录的命令也能用。名字最好 2 个字以上（单字容易被台词撞上）。\n"
-                + "（不想双击的话，录制浮层上面也有「完成」按钮。）");
+                + "（录制时屏幕最下面只有一条小字，不挡操作；每一步在日志里都有记录。）");
         col.addView(tip);
 
         TextView listTitle = new TextView(this);
         listTitle.setTextSize(13f);
         listTitle.setPadding(0, 24, 0, 6);
-        listTitle.setText(names.length == 0 ? "已录制：（还没有）" : "已录制（点“删除”可以去掉）：");
+        listTitle.setText(names.length == 0 ? "已录制：（还没有）" : "已录制（点右边的「删除」可去掉，去掉后可重新录）：");
         col.addView(listTitle);
 
         final AlertDialog[] holder = new AlertDialog[1];

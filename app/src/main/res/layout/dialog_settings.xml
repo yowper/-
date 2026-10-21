@@ -41,7 +41,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:text="蓝牙耳机音量下调识别窗口（毫秒，默认 1000，最短 200）：短剧模式=恰好两下调→上拉+还原音量；非短剧=一下调→下一页+音量上键补一次"
+            android:text="蓝牙耳机音量下调识别窗口（毫秒，默认 200，范围 200~5000）：短剧=两下调→上拉+还原音量；非短剧=一下调→下一页+音量补回"
             android:textStyle="bold" />
 
         <EditText
@@ -49,7 +49,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:inputType="number"
-            android:text="1000" />
+            android:text="200" />
 
         <TextView
             android:layout_width="match_parent"
