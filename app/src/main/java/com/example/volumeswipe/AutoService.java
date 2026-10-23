@@ -431,43 +431,32 @@ public class AutoService extends AccessibilityService {
             return;
         }
         if (shortDramaOn()) {
-            // 短剧模式（用户要求 v2.30）：上键 = 先上拉，最后再把音量 -1 还原到上调前
+            // 短剧模式（用户要求 v2.31）：上键 = 广告命令完整流程
             fireVolUpDrama(before);
             return;
         }
         KeepService.note("耳机音量上调（普通模式只调音量，不触发动作）");
     }
 
-    /** 短剧模式、蓝牙音量上键：先上拉，最后把音量 -1 还原到上调前（恢复原音量） */
+    /** 蓝牙上键的音量还原目标（上调前的值）；-1 = 没有 override */
+    private int btUpRestoreVol = -1;
+
+    /** 短剧模式、蓝牙音量上键（用户要求 v2.31）：和广告命令同一套流程 ——
+     *  先静音 → 截图读秒 → 没有秒就先上拉 → 恢复声音，同时音量 -1 还原到上调前。
+     *  （还原目标用 btUpRestoreVol 带进静音/恢复流程：恢复声音时顺手把音量退回 -1） */
     private void fireVolUpDrama(final int orig) {
-        KeepService.note("短剧：蓝牙音量上键 → 先上拉，最后音量 -1 还原到 " + orig);
-        handler.post(new Runnable() {
-            @Override
-            public void run() {
-                swipeUpOnly();
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                            if (am != null) {
-                                int now2 = am.getStreamVolume(AudioManager.STREAM_MUSIC);
-                                if (now2 > orig) {
-                                    markVolSelf();
-                                    am.setStreamVolume(AudioManager.STREAM_MUSIC, orig, 0);
-                                    KeepService.note("音量已还原：" + now2 + " → " + orig);
-                                } else {
-                                    KeepService.note("音量无需还原：当前 " + now2 + "（上调前 " + orig + "）");
-                                }
-                            }
-                        } catch (Throwable t2) {
-                            KeepService.note("音量还原失败：" + t2.getClass().getSimpleName());
-                        }
-                    }
-                }, 700);
-                toastResult(Commands.CMD_NEXT, "耳机上键：上拉");
-            }
-        });
+        if (!isIdle()) {
+            KeepService.note("耳机音量上调忽略了：正在识别一轮命令");
+            return;
+        }
+        KeepService.note("短剧：蓝牙音量上键 → 广告命令（先静音 → 截图读秒 → 上拉 → 恢复声音），"
+                + "恢复时音量 -1 还原到 " + orig);
+        btUpRestoreVol = orig;
+        if (!executeCommand(Commands.CMD_SKIP_AD, "蓝牙音量上键")) {
+            btUpRestoreVol = -1;
+            KeepService.note("上键的广告命令被防重/守卫拦住（原因看上一条日志）");
+            toast("广告命令被拦：可能刚执行过一次，原因看日志");
+        }
     }
 
     /** 阅读模式、蓝牙音量上键：上一页 + 音量 -1 补回上调前 */
@@ -748,24 +737,21 @@ public class AutoService extends AccessibilityService {
         boolean old = shortDramaOn();
         getSharedPreferences("cfg", MODE_PRIVATE).edit().putBoolean("shortDrama", on).apply();
         if (old != on) {
-            postStatus(on ? "短剧模式：已开启（停/播放；大/小、亮/暗、禁音/声音、录制 和自己录的命令全局可用；上键=上拉 下键=下集 摇一摇=广告）"
+            postStatus(on ? "短剧模式：已开启（只收 蓝牙下键=下集、摇一摇=广告、停/暂停/播放 和自己录的命令）"
                     : "短剧模式：已关闭（恢复接收所有命令）");
+            showIdleBox(); // 模式切了，待命小框跟着换（文本框 ↔ 小字提示）
             KeepService.note((on ? "短剧模式已开启" : "短剧模式已关闭")
                     + (why == null || why.length() == 0 ? "" : "：" + why));
         }
     }
 
-    /** 短剧模式允许的命令（用户要求 v2.30）：
-     *  上集/下集/广告/直播/手动 都从短剧模式去掉；
-     *  保留：停/暂停/播放、大/小（音量）、亮/暗（亮度）、禁音/声音、录制
+    /** 短剧模式允许的命令（用户要求 v2.31：其他命令无效）：
+     *  只收 停/暂停/播放；
      *  + 「短剧」（再说一次就退出短剧模式）+「小白再见」（安全阀）。
-     *  自己录的命令不在这里面 —— resolveCmd 里它优先放行 */
+     *  自己录的命令不在这里面 —— resolveCmd 里它优先放行；
+     *  蓝牙下键/上键、摇一摇不走这里（poller/传感器直接触发）。 */
     private static boolean isDramaCmd(int cmd) {
         return cmd == Commands.CMD_DRAMA_TOGGLE
-                || cmd == Commands.CMD_VOL_UP || cmd == Commands.CMD_VOL_DOWN
-                || cmd == Commands.CMD_BRIGHT_UP || cmd == Commands.CMD_BRIGHT_DOWN
-                || cmd == Commands.CMD_SOUND_OFF || cmd == Commands.CMD_SOUND_ON
-                || cmd == Commands.CMD_RECORD_TOGGLE
                 || cmd == Commands.CMD_TOGGLE_PLAY || cmd == Commands.CMD_RESUME
                 || cmd == Commands.CMD_EXIT;
     }
@@ -1307,12 +1293,12 @@ public class AutoService extends AccessibilityService {
 
     // ==================== 待命命令条 ====================
 
-    /** 待命状态的小条：不抢焦点，只是提示在运行（免豆包模式什么都不显示） */
+    /** 待命小框（v2.31 改版）：
+     *  非短剧、非阅读模式 = 文本命令框（最开始那个小框 + OK 按钮）：
+     *  有焦点、弹键盘、自动点一下豆包 Mic；输入后点 OK 就执行，错误命令也下达。
+     *  短剧/阅读模式 = 只显示一行小字提示（不出编辑框）。 */
     public void showIdleBox() {
         removeBox();
-        if (!useDoubao()) {
-            return; // 不用豆包：编辑框整个不出现在屏幕上
-        }
         if (wm == null) {
             wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         }
@@ -1320,76 +1306,171 @@ public class AutoService extends AccessibilityService {
             return;
         }
         final int density = (int) getResources().getDisplayMetrics().density;
-        final int boxW = 96 * density;
-        final int boxH = 26 * density;
-
-        TextView tv = new TextView(this);
-        tv.setText(useDoubao() ? "待命中 · 嗨小白" : "听命令中 · 免豆包");
-        tv.setTextColor(0xFFFFFFFF);
-        tv.setTextSize(10f);
-        tv.setGravity(Gravity.CENTER);
-        tv.setBackgroundColor(0xAA000000);
+        final boolean textMode = !shortDramaOn() && !readingOn();
+        final int boxW = (textMode ? 150 : 96) * density;
+        final int boxH = (textMode ? 30 : 26) * density;
+        final int closeW = 26 * density;
 
         box = new FrameLayout(this);
-        box.addView(tv, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        idleTv = tv;
+        idleTv = null;
+        boxEdit = null;
+        boolean focusable;
+        if (textMode) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setBackgroundColor(0xDD000000);
+
+            final EditText et = new EditText(this);
+            et.setHint("输入命令，点OK执行");
+            et.setTextColor(0xFFFFFFFF);
+            et.setHintTextColor(0xFFAAAAAA);
+            et.setBackgroundColor(0x00000000);
+            et.setPadding(8, 2, 4, 2);
+            et.setTextSize(11f);
+            et.setSingleLine(true);
+            et.setInputType(InputType.TYPE_CLASS_TEXT);
+
+            TextView okBtn = new TextView(this);
+            okBtn.setText("OK");
+            okBtn.setTextColor(0xFFFFFFFF);
+            okBtn.setTextSize(12f);
+            okBtn.setGravity(Gravity.CENTER);
+            okBtn.setBackgroundColor(0xFF2E7D32);
+            okBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    executeTextCommand(et.getText().toString());
+                }
+            });
+
+            row.addView(et, new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+            row.addView(okBtn, new LinearLayout.LayoutParams(
+                    closeW * 2, LinearLayout.LayoutParams.MATCH_PARENT));
+            box.addView(row, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, boxH));
+            boxEdit = et;
+            focusable = true;
+        } else {
+            TextView tv = new TextView(this);
+            tv.setText(shortDramaOn() ? "短剧模式 · 摇一摇=广告" : "阅读模式");
+            tv.setTextColor(0xFFFFFFFF);
+            tv.setTextSize(10f);
+            tv.setGravity(Gravity.CENTER);
+            tv.setBackgroundColor(0xAA000000);
+            box.addView(tv, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+            idleTv = tv;
+            focusable = false;
+        }
 
         int[] pos = boxPos();
         boxLp = new WindowManager.LayoutParams(
                 boxW, boxH, winType(),
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                (focusable ? 0 : WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         boxLp.gravity = Gravity.TOP | Gravity.START;
         boxLp.x = pos[0];
         boxLp.y = pos[1];
+        if (focusable) {
+            boxLp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+                    | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING;
+        }
 
-        // 拖动（待命状态下整条都能拖）
-        final FrameLayout fl = box;
-        tv.setOnTouchListener(new View.OnTouchListener() {
-            private float dx, dy;
-            private int sx, sy;
+        // 拖动（只在小字提示模式；文本框要打字，不拖）
+        if (!textMode) {
+            final FrameLayout fl2 = box;
+            idleTv.setOnTouchListener(new View.OnTouchListener() {
+                private float dx, dy;
+                private int sx, sy;
 
-            @Override
-            public boolean onTouch(View v, MotionEvent e) {
-                switch (e.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        dx = e.getRawX();
-                        dy = e.getRawY();
-                        sx = boxLp.x;
-                        sy = boxLp.y;
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        boxLp.x = sx + (int) (e.getRawX() - dx);
-                        boxLp.y = sy + (int) (e.getRawY() - dy);
-                        clampLp(boxLp);
-                        try {
-                            wm.updateViewLayout(fl, boxLp);
-                        } catch (Exception ignored) {
-                        }
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        getSharedPreferences("cfg", MODE_PRIVATE).edit()
-                                .putInt("box_x", boxLp.x)
-                                .putInt("box_y", boxLp.y)
-                                .apply();
-                        return true;
-                    default:
-                        return false;
+                @Override
+                public boolean onTouch(View v, MotionEvent e) {
+                    switch (e.getActionMasked()) {
+                        case MotionEvent.ACTION_DOWN:
+                            dx = e.getRawX();
+                            dy = e.getRawY();
+                            sx = boxLp.x;
+                            sy = boxLp.y;
+                            return true;
+                        case MotionEvent.ACTION_MOVE:
+                            boxLp.x = sx + (int) (e.getRawX() - dx);
+                            boxLp.y = sy + (int) (e.getRawY() - dy);
+                            clampLp(boxLp);
+                            try {
+                                wm.updateViewLayout(fl2, boxLp);
+                            } catch (Exception ignored) {
+                            }
+                            return true;
+                        case MotionEvent.ACTION_UP:
+                            getSharedPreferences("cfg", MODE_PRIVATE).edit()
+                                    .putInt("box_x", boxLp.x)
+                                    .putInt("box_y", boxLp.y)
+                                    .apply();
+                            return true;
+                        default:
+                            return false;
+                    }
                 }
-            }
-        });
+            });
+        }
 
         try {
             wm.addView(box, boxLp);
         } catch (Exception e) {
             box = null;
             idleTv = null;
+            boxEdit = null;
+            return;
+        }
+        if (textMode && boxEdit != null) {
+            // 用户要求：编辑框获得焦点 + 自动点一下豆包 Mic
+            boxEdit.setFocusable(true);
+            boxEdit.setFocusableInTouchMode(true);
+            boxEdit.requestFocus();
+            idleMicTries = 0;
+            idleMicDelayDone = false;
+            handler.removeCallbacks(idleMicTask);
+            handler.post(idleMicTask);
         }
     }
+
+    /** 文本命令框：等键盘弹出后自动点一下豆包 Mic（v2.31） */
+    private int idleMicTries = 0;
+    private boolean idleMicDelayDone = false;
+
+    private final Runnable idleMicTask = new Runnable() {
+        @Override
+        public void run() {
+            if (boxEdit == null || !isIdle() || shortDramaOn() || readingOn()) {
+                return; // 框没了/进了流程/切了模式就不点
+            }
+            if (!imeWindowVisible() && idleMicTries < 50) {
+                idleMicTries++;
+                if (idleMicTries == 1 || idleMicTries % 13 == 0) {
+                    KeepService.note("文本命令框：还在等键盘弹出来…");
+                }
+                if (idleMicTries % 6 == 0) {
+                    showIme();
+                }
+                handler.postDelayed(this, MIC_POLL_MS);
+                return;
+            }
+            if (!idleMicDelayDone) {
+                idleMicDelayDone = true;
+                int delay = Math.max(0, Math.min(3000,
+                        getSharedPreferences("cfg", MODE_PRIVATE)
+                                .getInt("micdelay", 200)));
+                handler.postDelayed(this, delay);
+                return;
+            }
+            blindTapMic();
+            KeepService.note("文本命令框：已点豆包 Mic（说也行、打也行，点 OK 执行）");
+        }
+    };
 
     private void setIdleBarText(String s) {
         if (idleTv != null) {
@@ -3691,8 +3772,10 @@ public class AutoService extends AccessibilityService {
         if (!on) {
             toast("阅读模式已关");
             KeepService.note("阅读模式已关（上页/下页/蓝牙音量键翻页随之失效）");
+            showIdleBox(); // 模式切了，待命小框跟着换
             return;
         }
+        showIdleBox(); // 阅读模式开：待命小框换成小字提示
         KeepService.note("阅读模式已开：只听 上页/下页/蓝牙音量键/「阅读」/小白再见；"
                 + "自动打开阅读软件后点一次 (50%,20%)");
         toast("阅读模式已开");
@@ -3760,30 +3843,9 @@ public class AutoService extends AccessibilityService {
      *  自动点一下豆包输入法的 Mic（想说的可以说）；旁边的 OK 点了就执行，
      *  错误命令也照样下达（不过模式白名单，直接执行通道）。 */
     private void showTextBox(String why) {
-        if (shortDramaOn() || readingOn()) {
-            KeepService.note("文本命令框：短剧/阅读模式里不开");
-            return;
-        }
-        if (manualLayer != null) {
-            removeManualBox();
-        }
-        if (box != null) {
-            removeBox(); // 已开着就先收，重开
-        }
-        phase = PHASE_ARMED;
-        micClicked = false;
-        micAttempts = 0;
-        micBlindDone = false;
-        micDelayDone = false;
-        micExtraTaps = 0;
-        lastBoxText = "";
-        lastBoxChangeAt = 0;
-        armAt = System.currentTimeMillis();
-        armedDeadline = armAt + VOSK_WINDOW_MS;
-        showActiveBox(true);
-        enterDoubao(why); // 有焦点 + 弹键盘 + 自动点一下豆包 Mic
-        handler.removeCallbacks(tickTask);
-        handler.postDelayed(tickTask, 200);
+        // v2.31：文本命令框就是待命小框（showIdleBox 的文本模式），不再另起一套
+        KeepService.note(why);
+        showIdleBox();
     }
 
     /** 文本命令框 OK 按钮：不管对错都下达 —— 认得出就执行；认不出也记日志+提示 */
@@ -3803,8 +3865,10 @@ public class AutoService extends AccessibilityService {
         KeepService.note("文本命令框执行：「" + t + "」");
         if (executeCommand(cmd, t)) {
             toastResult(cmd, "执行：" + t);
-            removeBox();
-            backToIdle();
+            // 框留着（待命小框本来就该在），只清空文字好继续输
+            if (boxEdit != null) {
+                boxEdit.setText("");
+            }
         } else {
             KeepService.note("文本命令框：「" + t + "」被拦，没有执行（原因看上一条日志）");
             toast("被拦：原因看日志");
@@ -4361,6 +4425,11 @@ public class AutoService extends AccessibilityService {
             int stream = AudioManager.STREAM_MUSIC;
             SharedPreferences sp = getSharedPreferences("cfg", MODE_PRIVATE);
             int before = am.getStreamVolume(stream);
+            if (mute && btUpRestoreVol >= 0) {
+                // 蓝牙上键带进来的：恢复声音时音量要退回上调前（-1），记住目标
+                before = btUpRestoreVol;
+                KeepService.note("蓝牙上键：恢复声音时音量目标 = " + before);
+            }
             if (mute) {
                 sp.edit().putInt("volBeforeMute", before)
                         .putBoolean("soundMuted", true).apply();
@@ -4384,12 +4453,16 @@ public class AutoService extends AccessibilityService {
                 sp.edit().putBoolean("soundMuted", false).apply();
                 if (wasMuted && vol > 0) {
                     try {
+                        markVolSelf();
                         am.setStreamVolume(stream, vol, 0);
                     } catch (Throwable t2) {
                         am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0);
                     }
                     KeepService.note("恢复声音：媒体音量 → " + am.getStreamVolume(stream)
                             + "（禁音前是 " + vol + "）");
+                    if (btUpRestoreVol >= 0) {
+                        btUpRestoreVol = -1; // 蓝牙上键的还原目标用完清掉
+                    }
                 } else {
                     am.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0);
                     KeepService.note("恢复声音：媒体音量 → " + am.getStreamVolume(stream)
