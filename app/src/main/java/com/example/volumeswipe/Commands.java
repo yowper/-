@@ -134,7 +134,7 @@ public final class Commands {
                 KW_EXIT, KW_PAGE_UP, KW_PAGE_DOWN, KW_SKIP_AD, KW_EXIT_LIVE,
                 KW_PREV, KW_NEXT, KW_VOL_UP, KW_VOL_DOWN,
                 KW_BRIGHT_UP, KW_BRIGHT_DOWN,
-                KW_DOUBAO_ON, KW_DOUBAO_OFF, KW_TEST_SECONDS, KW_TOGGLE_PLAY, KW_DRAMA,
+                KW_TOGGLE_PLAY, KW_DRAMA,
                 KW_RECORD, KW_SOUND_OFF, KW_SOUND_ON, KW_READING, KW_MANUAL
         };
         for (String[] arr : all) {
@@ -144,7 +144,6 @@ public final class Commands {
         }
         set.add("打开");
         set.add("启动");
-        set.add("豆包");
         // 「打开抖音」「打开红果」… 这些 App 名字必须提前写进词表，
         // 否则 Vosk 压根听不懂这几个名字
         for (String s : Apps.OPEN_PHRASES) {
@@ -184,41 +183,13 @@ public final class Commands {
             return CMD_NONE;
         }
 
-        // 退出指令放最前面，优先级最高（「小白再见」里含唤醒词）
+        // 退出指令放最前面，优先级最高
         if (hit(t, KW_EXIT)) {
             return CMD_EXIT;
         }
 
-        // 唤醒词不与命令组合（用户要求）：
-        // 只要句子里有唤醒词，就当成【纯唤醒】——后面的“下一集”之类一律不当命令。
-        // （命令要单独说：先说「嗨小白」，等框/键盘出来再说「下一集」）
-        if (containsWakeWord(t)) {
-            return CMD_NONE;
-        }
-
-        // 豆包开关：必须放在「打开/启动」兑底之前，否则「打开豆包」会被当成开 App
-        // 0) 「打开豆包应用」= 打开豆包这个 App（要在「打开豆包」之前判）
-        if (Apps.doubaoApp(t)) {
-            return CMD_OPEN;
-        }
-        // 1) 明确说「关」的（先判，免得「不用豆包」被「用豆包」抢走）
-        if (hit(t, KW_DOUBAO_OFF)) {
-            return CMD_DOUBAO_OFF;
-        }
-        // 2) 明确说「开」的
-        if (hit(t, KW_DOUBAO_ON)) {
-            return CMD_DOUBAO_ON;
-        }
-        // 3) 只喊一声「打开」（就这两个字）→ 当打开豆包；豆包本来开着的话，
-        //    executeCommand 里会当成“已打开”忽略
-        if (t.equals("打开")) {
-            return CMD_DOUBAO_ON;
-        }
-        // 4) 只喊一声「豆包」（没说明确开关）→ 切换：
-        //    勾上了「使用豆包语音输入法」就关，没勾就开（用户要求）
-        if (t.contains("豆包")) {
-            return CMD_DOUBAO_TOGGLE;
-        }
+        // 用户要求（v2.30）：去掉「嗨小白」唤醒、去掉豆包输入法勾选的语音开关 ——
+        // 唤醒词不再拦截命令；豆包相关的语音命令整个删掉（豆包 IME 只留给文本命令框点 Mic 用）。
         // 5) 「短剧」= 切换短剧模式：没开就进入，开着就退出
         //   （用户要求：像「豆包」一样用语音切换，不用勾选框，也不用「嗨小白」退出）
         if (t.contains("短剧")) {
@@ -239,10 +210,6 @@ public final class Commands {
         if (t.contains("录制")) {
             return CMD_RECORD_TOGGLE;
         }
-        if (hit(t, KW_TEST_SECONDS)) {
-            return CMD_TEST_SECONDS;
-        }
-
         // 先判“页”，避免被“上一/下一”抢走
         if (hit(t, KW_PAGE_UP)) {
             return CMD_PAGE_UP;

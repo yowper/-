@@ -41,6 +41,34 @@ public class KeepService extends Service {
     public static volatile String recent = "";
 
     private final Handler ui = new Handler(Looper.getMainLooper());
+
+    /** 用户要求（v2.30）：半小时一次后台驻留检查 + 自动恢复本地语音 */
+    private static final long RESIDENCY_CHECK_MS = 30L * 60 * 1000;
+
+    private final Runnable residencyCheck = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                boolean enabled = getSharedPreferences("cfg", MODE_PRIVATE)
+                        .getBoolean("enabled", false);
+                android.app.Service me = KeepService.this;
+                AutoService svc = AutoService.get();
+                note("驻留检查（每 30 分钟）：语音=" + voiceState
+                        + " 无障碍=" + (svc == null ? "未连" : "已连")
+                        + " 退出标记=" + (enabled ? "无" : "已退出"));
+                if (enabled) {
+                    // 自动恢复本地语音（引擎死了会在这里重新拉起来）
+                    applyVoiceSetting();
+                    if (svc != null) {
+                        // 音量轮询死了也一并拉起来
+                        svc.startVolPoller();
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            ui.postDelayed(this, RESIDENCY_CHECK_MS);
+        }
+    };
     private WakeEngine wake;
     private String lastLine = "说「嗨小白」或摇一摇";
     /** 最近 5 条状态（通知展开后可见，方便排查命令执行） */
@@ -246,6 +274,8 @@ public class KeepService extends Service {
         createChannel();
         promoteForeground();
         startShake();
+        // 用户要求（v2.30）：每半小时检查一次后台驻留，自动恢复本地语音
+        ui.postDelayed(residencyCheck, RESIDENCY_CHECK_MS);
         applyVoiceSetting();
         ui.postDelayed(watchdog, 2500);
     }
@@ -501,20 +531,14 @@ public class KeepService extends Service {
                 KeepService.note("摇一摇忽略了：短剧模式才起作用（说「短剧」开启）");
                 return;
             }
-            // 正在识别一轮命令（框/键盘在身上）时不要动手：
-            // 摇一下手机就把整轮搞乱，用户根本没预期
+            // 用户要求（v2.30）：摇一摇 = 广告命令（短剧模式）
             if (!svc.isIdle()) {
                 return;
             }
-            // 用户要求：摇一摇也只有在【真的有视频/声音在播】时才动手
-            // （跟单字命令一个标准：页面没在放的时候摇了什么都不做）
-            if (!svc.isAudioPlaying()) {
-                KeepService.note("摇一摇忽略了：现在没有视频/声音在播");
-                return;
+            KeepService.note("摇一摇（短剧模式）→ 广告命令");
+            if (!svc.executeCommand(Commands.CMD_SKIP_AD, "摇一摇")) {
+                KeepService.note("摇一摇的广告命令被拦（原因看上一条日志）");
             }
-            // 用户要求：去掉点 (50%,20%) 那一下，只上滑（只滑一次的锁照常生效）
-            KeepService.note("摇一摇（短剧模式）→ 只上滑");
-            svc.swipeUpOnly();
         } catch (Exception ignored) {
         }
     }

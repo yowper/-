@@ -307,6 +307,19 @@ public class AutoService extends AccessibilityService {
      *  部分机型 VOLUME_CHANGED_ACTION 收不到或一次按键发好几条，都会漏/误判） */
     private static final long VOL_POLL_MS = 100;
 
+    /** 程序自己改的音量（语音 大/小、翻页补回、还原）——轮询跳过这次变化，不触发动作 */
+    private boolean volSelfChange = false;
+
+    private void markVolSelf() {
+        volSelfChange = true;
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                volSelfChange = false;
+            }
+        }, 500);
+    }
+
     private final Runnable volPollTask = new Runnable() {
         @Override
         public void run() {
@@ -322,9 +335,14 @@ public class AutoService extends AccessibilityService {
                             // 用户要求：日志里记下到底收到了什么，方便排查耳机音量键
                             KeepService.note("音量采样：" + lastKnownVol + " → " + v
                                     + (v < lastKnownVol ? "（下调）" : "（上调）")
-                                    + (btAudioOn(am) ? "（蓝牙已连）" : "（蓝牙未连）"));
-                            if (v < lastKnownVol) {
+                                    + (btAudioOn(am) ? "（蓝牙已连）" : "（蓝牙未连）")
+                                    + (volSelfChange ? "（程序自己调的，忽略）" : ""));
+                            if (volSelfChange) {
+                                // 程序自己调的（语音 大/小、翻页补回、还原音量）——不当按键处理
+                            } else if (v < lastKnownVol) {
                                 onVolumeDropped(lastKnownVol);
+                            } else {
+                                onVolumeRaised(lastKnownVol);
                             }
                         }
                         lastKnownVol = v;
@@ -377,38 +395,103 @@ public class AutoService extends AccessibilityService {
     // 用户要求：不再做「两下」判定——短剧模式识别到【一下】就：记音量 → 上拉 → 恢复音量。
     // 之前那套两下状态机（含窗口参数）整个删掉，免得再出不稳定。
 
-    /** 短剧模式、恰好两下：发上拉（下一集）+ 音量还原到下调前（等于音量大一点按两次） */
+    /** 短剧模式、蓝牙音量下键：直接执行【下集】（用户要求 v2.30：不再还原音量） */
     private void fireVolPull(final int restore) {
         if (!isIdle()) {
             KeepService.note("耳机音量下调忽略了：正在识别一轮命令");
             return;
         }
-        KeepService.note("蓝牙耳机音量下调了一下 → 上拉（下一集），音量自动还原");
+        KeepService.note("蓝牙耳机音量下键 → 下集（不还原音量）");
         handler.post(new Runnable() {
             @Override
             public void run() {
-                // 音量大一点执行两次：直接还原到下调前的值（效果一样且更准）
+                if (executeCommand(Commands.CMD_NEXT, "耳机音量下键")) {
+                    toastResult(Commands.CMD_NEXT, "耳机下键：下集");
+                } else {
+                    KeepService.note("下集被防重/守卫拦住（原因看上一条日志）");
+                    toast("下集被拦：可能刚滑过一次，原因看日志");
+                }
+            }
+        });
+    }
+
+    /** 检测到一次音量上调（before = 上调前的音量） */
+    private void onVolumeRaised(int before) {
+        KeepService.note("音量上调进入处理：阅读=" + (readingOn() ? "开" : "关")
+                + " 短剧=" + (shortDramaOn() ? "开" : "关")
+                + " 待命=" + (isIdle() ? "是" : "否")
+                + "（上调前音量 " + before + "）");
+        if (!isIdle()) {
+            KeepService.note("耳机音量上调忽略了：正在识别一轮命令");
+            return;
+        }
+        // 阅读模式：蓝牙音量上键【一下】= 上一页 + 音量 -1 补回（用户要求 v2.30）
+        if (readingOn()) {
+            fireVolPageUp(before);
+            return;
+        }
+        if (shortDramaOn()) {
+            // 短剧模式（用户要求 v2.30）：上键 = 先上拉，最后再把音量 -1 还原到上调前
+            fireVolUpDrama(before);
+            return;
+        }
+        KeepService.note("耳机音量上调（普通模式只调音量，不触发动作）");
+    }
+
+    /** 短剧模式、蓝牙音量上键：先上拉，最后把音量 -1 还原到上调前（恢复原音量） */
+    private void fireVolUpDrama(final int orig) {
+        KeepService.note("短剧：蓝牙音量上键 → 先上拉，最后音量 -1 还原到 " + orig);
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                swipeUpOnly();
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                            if (am != null) {
+                                int now2 = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                                if (now2 > orig) {
+                                    markVolSelf();
+                                    am.setStreamVolume(AudioManager.STREAM_MUSIC, orig, 0);
+                                    KeepService.note("音量已还原：" + now2 + " → " + orig);
+                                } else {
+                                    KeepService.note("音量无需还原：当前 " + now2 + "（上调前 " + orig + "）");
+                                }
+                            }
+                        } catch (Throwable t2) {
+                            KeepService.note("音量还原失败：" + t2.getClass().getSimpleName());
+                        }
+                    }
+                }, 700);
+                toastResult(Commands.CMD_NEXT, "耳机上键：上拉");
+            }
+        });
+    }
+
+    /** 阅读模式、蓝牙音量上键：上一页 + 音量 -1 补回上调前 */
+    private void fireVolPageUp(final int restore) {
+        KeepService.note("蓝牙耳机音量上调了一下 → 上一页（翻书），音量 -1 补回 " + restore);
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
                 try {
                     AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                    if (am != null && restore > 0) {
+                    if (am != null) {
                         int now2 = am.getStreamVolume(AudioManager.STREAM_MUSIC);
-                        if (now2 < restore) {
+                        if (now2 > restore) {
+                            markVolSelf();
                             am.setStreamVolume(AudioManager.STREAM_MUSIC, restore, 0);
-                            getSharedPreferences("cfg", MODE_PRIVATE).edit()
-                                    .putBoolean("soundMuted", false).apply();
-                            KeepService.note("音量已自动还原：" + now2 + " → "
-                                    + am.getStreamVolume(AudioManager.STREAM_MUSIC)
-                                    + "（等于音量大一点按两次，下调前是 " + restore + "）");
+                            KeepService.note("音量已补回：" + now2 + " → "
+                                    + am.getStreamVolume(AudioManager.STREAM_MUSIC));
                         }
                     }
                 } catch (Throwable t2) {
-                    KeepService.note("音量还原失败：" + t2.getClass().getSimpleName());
+                    KeepService.note("音量补回失败：" + t2.getClass().getSimpleName());
                 }
-                if (executeCommand(Commands.CMD_NEXT, "耳机音量下调")) {
-                    toastResult(Commands.CMD_NEXT, "耳机下调音量：上拉（下一集）");
-                } else {
-                    KeepService.note("蓝牙上拉被防重/守卫拦住（原因看上一条日志）");
-                    toast("上拉被拦：可能刚滑过一次，原因看日志");
+                if (executeCommand(Commands.CMD_PAGE_UP, "耳机音量上调")) {
+                    toastResult(Commands.CMD_PAGE_UP, "耳机上调音量：上一页（翻书）");
                 }
             }
         });
@@ -431,6 +514,7 @@ public class AutoService extends AccessibilityService {
                         int target = Math.max(restore, 1);
                         int now2 = am.getStreamVolume(AudioManager.STREAM_MUSIC);
                         if (now2 < target) {
+                            markVolSelf();
                             am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0);
                             KeepService.note("音量已补回：" + now2 + " → "
                                     + am.getStreamVolume(AudioManager.STREAM_MUSIC));
@@ -477,9 +561,8 @@ public class AutoService extends AccessibilityService {
             KeepService.note("耳机音量下调（普通模式只调音量，不开阅读/短剧不触发动作）");
             return;
         }
-        // 短剧模式（用户要求 v2.26）：【一下】就触发：记音量 → 上拉 → 恢复音量
-        KeepService.note("蓝牙耳机音量下调了一下 → 上拉（下一集），音量自动还原（下调前 "
-                + before + "）");
+        // 短剧模式（用户要求 v2.30）：【一下】就触发：蓝牙下键 = 下集（不还原音量）
+        KeepService.note("蓝牙耳机音量下调了一下 → 下集，");
         fireVolPull(before);
     }
 
@@ -665,29 +748,25 @@ public class AutoService extends AccessibilityService {
         boolean old = shortDramaOn();
         getSharedPreferences("cfg", MODE_PRIVATE).edit().putBoolean("shortDrama", on).apply();
         if (old != on) {
-            postStatus(on ? "短剧模式：已开启（大/小、亮/暗、禁音/声音、录制 和自己录的命令全局可用）"
+            postStatus(on ? "短剧模式：已开启（停/播放；大/小、亮/暗、禁音/声音、录制 和自己录的命令全局可用；上键=上拉 下键=下集 摇一摇=广告）"
                     : "短剧模式：已关闭（恢复接收所有命令）");
             KeepService.note((on ? "短剧模式已开启" : "短剧模式已关闭")
                     + (why == null || why.length() == 0 ? "" : "：" + why));
         }
     }
 
-    /** 短剧模式允许的命令（用户要求：音量/亮暗/录制都要【全局】能用，所以也在这里）：
-     *  下一集 / 上一集 / 广告 / 直播
-     *  + 大/小（音量）、亮/暗（亮度）、禁音/声音、停/播放
-     *  + 录制（开始录制动作）
+    /** 短剧模式允许的命令（用户要求 v2.30）：
+     *  上集/下集/广告/直播/手动 都从短剧模式去掉；
+     *  保留：停/暂停/播放、大/小（音量）、亮/暗（亮度）、禁音/声音、录制
      *  + 「短剧」（再说一次就退出短剧模式）+「小白再见」（安全阀）。
      *  自己录的命令不在这里面 —— resolveCmd 里它优先放行 */
     private static boolean isDramaCmd(int cmd) {
-        return cmd == Commands.CMD_NEXT || cmd == Commands.CMD_PREV
-                || cmd == Commands.CMD_SKIP_AD || cmd == Commands.CMD_EXIT_LIVE
-                || cmd == Commands.CMD_DRAMA_TOGGLE
+        return cmd == Commands.CMD_DRAMA_TOGGLE
                 || cmd == Commands.CMD_VOL_UP || cmd == Commands.CMD_VOL_DOWN
                 || cmd == Commands.CMD_BRIGHT_UP || cmd == Commands.CMD_BRIGHT_DOWN
                 || cmd == Commands.CMD_SOUND_OFF || cmd == Commands.CMD_SOUND_ON
                 || cmd == Commands.CMD_RECORD_TOGGLE
                 || cmd == Commands.CMD_TOGGLE_PLAY || cmd == Commands.CMD_RESUME
-                || cmd == Commands.CMD_MANUAL
                 || cmd == Commands.CMD_EXIT;
     }
 
@@ -752,7 +831,7 @@ public class AutoService extends AccessibilityService {
         if (shortDramaOn()) {
             if (cmd != Commands.CMD_NONE && !isDramaCmd(cmd)) {
                 if (verbose) {
-                    KeepService.note("短剧模式：只听 下集/上集/广告/直播 和自己录的命令，「"
+                    KeepService.note("短剧模式：只听 停/播放 和自己录的命令，「"
                             + t + "」（" + Commands.nameOf(cmd) + "）不接收；说「短剧」可退出短剧模式");
                 }
                 return Commands.CMD_NONE;
@@ -1382,6 +1461,20 @@ public class AutoService extends AccessibilityService {
         et.setSingleLine(true);
         et.setInputType(InputType.TYPE_CLASS_TEXT);
 
+        TextView okBtn = new TextView(this);
+        okBtn.setText("OK");
+        okBtn.setTextColor(0xFFFFFFFF);
+        okBtn.setTextSize(13f);
+        okBtn.setGravity(Gravity.CENTER);
+        okBtn.setBackgroundColor(0xFF2E7D32);
+        okBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // 用户要求：OK 点击就执行，错误命令也下达
+                executeTextCommand(boxEdit == null ? "" : boxEdit.getText().toString());
+            }
+        });
+
         TextView closeBtn = new TextView(this);
         closeBtn.setText("✕");
         closeBtn.setTextColor(0xFFFFFFFF);
@@ -1398,6 +1491,8 @@ public class AutoService extends AccessibilityService {
 
         row.addView(et, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+        row.addView(okBtn, new LinearLayout.LayoutParams(
+                closeW * 2, LinearLayout.LayoutParams.MATCH_PARENT));
         row.addView(closeBtn, new LinearLayout.LayoutParams(
                 closeW, LinearLayout.LayoutParams.MATCH_PARENT));
 
@@ -3657,129 +3752,65 @@ public class AutoService extends AccessibilityService {
         return "阅读";
     }
 
-    // 手动模式的命令输入框（喊「手动」弹出；✕ 关闭）
+    // 旧手动框已删除（用户要求 v2.30）：「手动」改开文本命令框（showTextBox）
     private LinearLayout manualLayer;
 
-    /** 手动模式：喊「手动」弹出一个能打字的命令框（黑底白字，点「执行」才执行）。
-     *  用户要求：有些命令语音认不出/来不及说，就在这里手动输；
-     *  短剧模式和普通模式都能喊，阅读模式里被白名单挡住。 */
-    private void showManualBox() {
-        if (wm == null) {
-            wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
-        }
-        if (wm == null) {
-            toast("悬浮窗还没准备好：请先点 ② 授予悬浮窗权限");
+    /** 文本命令框（用户要求 v2.30）：原「啨小白」唤醒编辑框改造。
+     *  说「手动」弹出：只在非短剧、非阅读模式；框有焦点、自动弹键盘、
+     *  自动点一下豆包输入法的 Mic（想说的可以说）；旁边的 OK 点了就执行，
+     *  错误命令也照样下达（不过模式白名单，直接执行通道）。 */
+    private void showTextBox(String why) {
+        if (shortDramaOn() || readingOn()) {
+            KeepService.note("文本命令框：短剧/阅读模式里不开");
             return;
         }
         if (manualLayer != null) {
             removeManualBox();
-            toast("手动模式已关");
-            return;
         }
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setBackgroundColor(0xF2000000);
-        col.setPadding(30, 26, 30, 22);
-
-        TextView tv = new TextView(this);
-        tv.setTextColor(0xFFFFFFFF);
-        tv.setTextSize(13f);
-        tv.setText("手动模式：输入命令后点「执行」——会先关掉这个框，马上执行；\n"
-                + "要再输就说一声「手动」再开。可输：下页 / 广告 / 直播 / 停 / 放 / 大 / 小 / 打开某某 / 自己录的名字…");
-
-        final EditText et = new EditText(this);
-        et.setHint("输入命令，比如：下页");
-        et.setTextColor(0xFFFFFFFF);
-        et.setHintTextColor(0xFFAAAAAA);
-        et.setBackgroundColor(0x00000000);
-        et.setTextSize(14f);
-        et.setSingleLine(true);
-
-        Button run = new Button(this);
-        run.setText("执行");
-        run.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                final String t = et.getText().toString();
-                // 用户要求：点「执行」先关掉手动框（键盘随之收起）马上执行命令；
-                // 要再输就说一声「手动」再开
-                hideImeFor(et);
-                removeManualBox();
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        int cmd = resolveCmd(t, true);
-                        if (cmd == Commands.CMD_NONE) {
-                            KeepService.note("手动模式：「" + t + "」没认出命令");
-                            toast("没认出命令：" + t);
-                            return;
-                        }
-                        if (executeCommand(cmd, t)) {
-                            toastResult(cmd, "执行：" + t);
-                            KeepService.note("手动模式执行：" + t);
-                        } else {
-                            // executeCommand 返 false 时日志里有原因（防重/反向/没在播）
-                            toast("没有执行：原因看日志（可能刚执行过同一条/反向命令）");
-                            KeepService.note("手动模式：「" + t + "」被防重/守卫拦住，没有执行");
-                        }
-                    }
-                }, 300);
-            }
-        });
-        Button close = new Button(this);
-        close.setText("✕ 关闭");
-        close.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                removeManualBox();
-                KeepService.note("手动模式已关闭");
-            }
-        });
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.addView(run, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(close, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        col.addView(tv, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        col.addView(et, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        col.addView(row, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        // 不加 FLAG_NOT_FOCUSABLE：要弹键盘输入
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                winType(),
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE;
-        try {
-            wm.addView(col, lp);
-            manualLayer = col;
-            KeepService.note("手动模式已开：输入命令点「执行」，✕ 关闭");
-        } catch (Exception e) {
-            manualLayer = null;
-            toast("手动框加不上（悬浮窗权限？）");
-            return;
+        if (box != null) {
+            removeBox(); // 已开着就先收，重开
         }
-        handler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (manualLayer == null) {
-                    return;
-                }
-                et.requestFocus();
-            }
-        }, 200);
+        phase = PHASE_ARMED;
+        micClicked = false;
+        micAttempts = 0;
+        micBlindDone = false;
+        micDelayDone = false;
+        micExtraTaps = 0;
+        lastBoxText = "";
+        lastBoxChangeAt = 0;
+        armAt = System.currentTimeMillis();
+        armedDeadline = armAt + VOSK_WINDOW_MS;
+        showActiveBox(true);
+        enterDoubao(why); // 有焦点 + 弹键盘 + 自动点一下豆包 Mic
+        handler.removeCallbacks(tickTask);
+        handler.postDelayed(tickTask, 200);
     }
+
+    /** 文本命令框 OK 按钮：不管对错都下达 —— 认得出就执行；认不出也记日志+提示 */
+    private void executeTextCommand(String raw) {
+        String t = Commands.normalize(raw);
+        if (t.length() == 0) {
+            toast("先输入命令再点 OK");
+            return;
+        }
+        // 不过模式白名单：错误命令也下达（用户要求）
+        int cmd = Commands.match(t);
+        if (cmd == Commands.CMD_NONE) {
+            KeepService.note("文本命令框下达：「" + t + "」（命令表里没有，不执行）");
+            toast("「" + t + "」不在命令表里");
+            return;
+        }
+        KeepService.note("文本命令框执行：「" + t + "」");
+        if (executeCommand(cmd, t)) {
+            toastResult(cmd, "执行：" + t);
+            removeBox();
+            backToIdle();
+        } else {
+            KeepService.note("文本命令框：「" + t + "」被拦，没有执行（原因看上一条日志）");
+            toast("被拦：原因看日志");
+        }
+    }
+
 
     private void removeManualBox() {
         if (manualLayer != null && wm != null) {
@@ -4233,9 +4264,6 @@ public class AutoService extends AccessibilityService {
             case Commands.CMD_DOUBAO_OFF:
                 switchDoubao(false);
                 break;
-            case Commands.CMD_TEST_SECONDS:
-                startCountdownProbe();
-                break;
             case Commands.CMD_VOL_UP:
                 handler.postDelayed(new Runnable() {
                     @Override
@@ -4278,9 +4306,9 @@ public class AutoService extends AccessibilityService {
                 replayRecorded(text);
                 break;
             case Commands.CMD_MANUAL:
-                // 「手动」= 弹出可输入的命令框（用户要求：语音认不出的/来不及说的，
-                // 手动输进去点「执行」就行；短剧和普通模式可用，阅读模式里被过滤）
-                showManualBox();
+                // 「手动」= 打开文本命令框（用户要求 v2.30：原啨小白编辑框改造），
+                // 只在非短剧、非阅读模式里开（短剧/阅读的白名单里没有手动，到不了这里）
+                showTextBox("文本命令框：输入后点 OK 执行（会自动点一下豆包 Mic）");
                 break;
             case Commands.CMD_READING_TOGGLE:
                 // 「阅读」= 开关阅读模式（开：自动打开阅读软件 + 点一次 50%,20%）
@@ -4323,6 +4351,7 @@ public class AutoService extends AccessibilityService {
      * 故意不加“成对命令反向锁”——接完电话要马上能恢复。
      */
     private void setMediaMute(boolean mute) {
+        markVolSelf(); // 程序自己改的音量：轮询不当按键处理
         try {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             if (am == null) {
@@ -4484,6 +4513,7 @@ public class AutoService extends AccessibilityService {
 
     /** 声音大一点/小一点：直接调媒体音量（不需要无障碍），并把结果写进通知栏 */
     private void adjustMediaVolume(boolean up) {
+        markVolSelf(); // 程序自己调的：轮询跳过这次变化（否则短剧里语音 大/小 会再触发一次下集/上拉）
         try {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             if (am == null) {
@@ -4652,8 +4682,7 @@ public class AutoService extends AccessibilityService {
      * 会干扰「下方像素比对」的判断。
      */
     private void toastResult(int cmd, String s) {
-        if (cmd == Commands.CMD_SKIP_AD || cmd == Commands.CMD_EXIT_LIVE
-                || cmd == Commands.CMD_TEST_SECONDS) {
+        if (cmd == Commands.CMD_SKIP_AD || cmd == Commands.CMD_EXIT_LIVE) {
             // 不弹 Toast（它在屏幕最下方，盖住读秒那一行）——
             // 改用屏幕下方 79% 处的状态条，既不挡读秒又能看到
             showStatusStrip(s);

@@ -126,18 +126,11 @@ public class MainActivity extends Activity {
         findViewById(R.id.btnRecord).setOnClickListener(v -> showRecordDialog());
 
         // 豆包语音输入法开关（默认勾选）
+        // 用户要求（v2.30）：去掉豆包输入法勾选 —— 不再展示，豆包固定不用做勾选开关
+        //（豆包 IME 本身仍留给文本命令框点 Mic 用）
         cbDoubao = findViewById(R.id.cbDoubao);
-        cbDoubao.setChecked(sp.getBoolean("useDoubao", false));
-        cbDoubao.setOnCheckedChangeListener((b, checked) -> {
-            if (syncingDoubao) {
-                return; // 程序自己同步过来的勾，不当作手动操作
-            }
-            sp.edit().putBoolean("useDoubao", checked).apply();
-            askAudioPermission();
-            // 服务可能已被 ✕ 退出杀掉：不在就直接拉起来，再切词表
-            KeepService.applyVoiceSetting(this);
-            toast(checked ? "豆包输入法参与识别（推荐）" : "不用豆包：不用唤醒词，直接说命令");
-        });
+        cbDoubao.setVisibility(android.view.View.GONE);
+        sp.edit().putBoolean("useDoubao", false).apply();
 
         // ⚙ 参数
         findViewById(R.id.btnSettings).setOnClickListener(v -> showSettings());
@@ -418,7 +411,7 @@ public class MainActivity extends Activity {
                 + "悬浮窗权限：" + (canOverlay ? "已授予 ✓" : "未授予 ✗  请点 ②") + "\n"
                 + "摇一摇：" + (shakeOn ? "已开启 ✓（只在短剧模式里起作用：只上滑）" : "已关闭") + "\n"
                 + "短剧模式：" + (sp.getBoolean("shortDrama", false)
-                        ? "已开启（只听 下集/上集/广告/直播/停·播放 和自己录的命令；大/小、亮/暗、禁音/声音、录制 全局能用；说「短剧」退出）"
+                        ? "已开启（只听 停·播放 和自己录的命令；上键=上拉 下键=下集 摇一摇=广告；大/小、亮/暗、禁音/声音、录制 全局能用；说「短剧」退出）"
                         : "已关闭（收所有命令；说「短剧」开启；退出程序自动关）") + "\n"
                 + "唤醒动作：什么都不做（不静音、不点屏幕）\n"
                 + "修改系统设置（亮/暗）：" + (Settings.System.canWrite(this)
